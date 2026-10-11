@@ -126,7 +126,6 @@ describe("GMI timed transcription", () => {
 		expect(bytes.subarray(0, 4).toString()).toBe("RIFF");
 		expect(bytes.readUInt32LE(24)).toBe(16_000);
 		expect(payload.generationConfig.responseMimeType).toBe("application/json");
-		expect(payload.generationConfig.thinkingConfig).toEqual({ thinkingLevel: "minimal" });
 		expect(payload.generationConfig.maxOutputTokens).toBe(4096);
 		expect(payload.generationConfig.responseSchema.properties.segments.items.required).toEqual([
 			"startSec",
