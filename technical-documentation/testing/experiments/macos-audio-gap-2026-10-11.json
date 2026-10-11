@@ -1,0 +1,139 @@
+{
+	"observedOn": "2026-10-11",
+	"build": "2.0.1-hans.5 (local patch based on upstream v2.0.0)",
+	"platform": "macOS 26.6.2 arm64",
+	"notReproducedOnCurrentUpstreamMain": true,
+	"audioDurationSec": 186.219979,
+	"videoDurationSec": 186.116667,
+	"audioRate": 48000,
+	"audioChannels": 2,
+	"middleZeroRuns": [
+		{
+			"startSec": 16.723958333333332,
+			"endSec": 16.816020833333333,
+			"durationSec": 0.0920625
+		},
+		{
+			"startSec": 17.250666666666667,
+			"endSec": 17.3066875,
+			"durationSec": 0.05602083333333333
+		},
+		{
+			"startSec": 61.474645833333334,
+			"endSec": 61.67735416666667,
+			"durationSec": 0.20270833333333332
+		},
+		{
+			"startSec": 61.858645833333334,
+			"endSec": 62.053333333333335,
+			"durationSec": 0.1946875
+		},
+		{
+			"startSec": 64.216,
+			"endSec": 64.41070833333333,
+			"durationSec": 0.19470833333333334
+		},
+		{
+			"startSec": 80.78933333333333,
+			"endSec": 81.38729166666667,
+			"durationSec": 0.5979583333333334
+		},
+		{
+			"startSec": 89.8693125,
+			"endSec": 90.86666666666666,
+			"durationSec": 0.9973541666666667
+		},
+		{
+			"startSec": 95.66129166666667,
+			"endSec": 98.576,
+			"durationSec": 2.9147083333333335
+		},
+		{
+			"startSec": 140.3973125,
+			"endSec": 152.62666666666667,
+			"durationSec": 12.229354166666667
+		}
+	],
+	"nativeSources": {
+		"microphone": {
+			"timeline": {
+				"droppedSeconds": 14.66925,
+				"trimmedSeconds": 0.16022916666666667,
+				"longestHoleSeconds": 2.3786666666666667,
+				"undeliveredSeconds": 5.422083333333333
+			},
+			"preRoll": {
+				"maxReplayTimelineWaitSeconds": 0.356006333,
+				"pendingPackets": 0,
+				"peakPendingPackets": 35,
+				"evictedPackets": 0,
+				"peakPendingBytes": 143360,
+				"replayedFrames": 17920,
+				"pendingFrames": 0,
+				"evictedFrames": 0,
+				"packetLimit": 512,
+				"cancelledFrames": 0,
+				"frameLimit": 96000
+			},
+			"bufferCount": 16965,
+			"minCallbackLagSeconds": 0.002663415,
+			"maxCallbackLagSeconds": 2.909079727,
+			"minQueueWaitSeconds": 2.2916996385902166e-5,
+			"maxQueueWaitSeconds": 8.952128167002229,
+			"minIngestionLagSeconds": 0.00272041,
+			"maxIngestionLagSeconds": 9.206521931,
+			"maxCallbackGapSeconds": 2.6671014160019695,
+			"maxIngestionGapSeconds": 2.8664714170008665,
+			"lastCallbackTimelineSeconds": 186.223881,
+			"lastIngestionTimelineSeconds": 186.228054791,
+			"lastBufferStartSeconds": 186.08979166666666,
+			"lastBufferEndSeconds": 186.10045833333334,
+			"lastPauseOffsetSeconds": 0
+		},
+		"system": {
+			"timeline": {
+				"undeliveredSeconds": 72.53014583333334,
+				"longestHoleSeconds": 72.53014583333334,
+				"droppedSeconds": 12.409416666666667,
+				"trimmedSeconds": 0
+			},
+			"preRoll": {
+				"cancelledFrames": 0,
+				"pendingFrames": 0,
+				"peakPendingBytes": 0,
+				"evictedPackets": 0,
+				"evictedFrames": 0,
+				"replayedFrames": 0,
+				"pendingPackets": 0,
+				"peakPendingPackets": 0,
+				"maxReplayTimelineWaitSeconds": 0,
+				"frameLimit": 96000,
+				"packetLimit": 512
+			},
+			"bufferCount": 10670,
+			"minCallbackLagSeconds": 0.021349916,
+			"maxCallbackLagSeconds": 0.021636583,
+			"minQueueWaitSeconds": 1.029099803417921e-5,
+			"maxQueueWaitSeconds": 8.951204999997572,
+			"minIngestionLagSeconds": 0.02139025,
+			"maxIngestionLagSeconds": 8.972589749,
+			"maxCallbackGapSeconds": 0.010906333998718765,
+			"maxIngestionGapSeconds": 2.9799534590056282,
+			"lastCallbackTimelineSeconds": 186.36488775,
+			"lastIngestionTimelineSeconds": 186.371015458,
+			"lastBufferStartSeconds": 186.3328125,
+			"lastBufferEndSeconds": 186.34347916666667,
+			"lastPauseOffsetSeconds": 0
+		}
+	},
+	"timing": {
+		"anchorHostTimeSeconds": 37816.311375,
+		"missingDataWatermarkSeconds": 1,
+		"maxDecodeWallSeconds": 0.26619449999998324,
+		"maxDrainWallSeconds": 1.8786636250006268,
+		"maxAppendWallSeconds": 0.49337937500240514,
+		"maxDrainEventGapSeconds": 1.8788086249987828
+	},
+	"actualSpeechGapSeconds": [0.597958333333338, 0.9973541666666534, 2.914708333333323],
+	"privacy": "Allowlisted timing metrics only. No recordings, transcript text, original paths, credentials or device identifiers."
+}

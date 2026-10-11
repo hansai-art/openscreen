@@ -1,0 +1,37 @@
+{
+	"scope": "Historical failures of a local optional GMI integration, not upstream built-in Whisper. Not re-tested on 2026-10-12.",
+	"experiments": [
+		{
+			"observedAt": "2026-10-11T08:36:54.197Z",
+			"requestedModel": "gemini-3.8-flash",
+			"audioSec": 4.4454375,
+			"httpStatus": 500,
+			"httpElapsedMs": 1912,
+			"success": false,
+			"providerError": "Internal Server Error",
+			"inferenceRequestCount": 1
+		},
+		{
+			"observedAt": "2026-10-11T08:39:14.227Z",
+			"requestedModel": "gemini-3.1-flash-lite-preview",
+			"audioSec": 4.4454375,
+			"httpStatus": 429,
+			"httpElapsedMs": 2422,
+			"success": false,
+			"providerError": "{\"error\":{\"message\":\"Service temporarily unavailable. All endpoints are currently overloaded. Please try again later.\",\"type\":\"service_unavailable\",\"code\":\"rate_limit_exceeded\"}}",
+			"inferenceRequestCount": 1
+		}
+	],
+	"earlierHypotheses": [
+		{
+			"change": "Reduce Gemini thinking overhead",
+			"result": "First approximately 90-second chunk timed out at 120 seconds. Reverted."
+		},
+		{
+			"change": "Shorten audio input to 24.33 seconds",
+			"result": "A single chunk still timed out at 120 seconds."
+		}
+	],
+	"caveat": "Later HTTP 429 overload response does not establish the cause of all earlier timeouts. No replacement GMI model is claimed to work.",
+	"privacy": "No credentials, source files, audio, transcript, or private paths included."
+}
