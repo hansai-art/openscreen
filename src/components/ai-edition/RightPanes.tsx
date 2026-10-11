@@ -56,6 +56,7 @@ import {
 	type WebcamBackgroundMode,
 } from "@/components/video-editor/types";
 import { useI18n, useScopedT } from "@/contexts/I18nContext";
+import { useTranscriptionProvider } from "@/hooks/useTranscriptionProvider";
 import { resolveCaptionLane } from "@/lib/ai-edition/captions/settings";
 import { collapseTracksToPills, trackGroupId } from "@/lib/ai-edition/document/audioTracks";
 import {
@@ -865,6 +866,7 @@ export function TranscriptPane({
 }) {
 	const ts = useScopedT("settings");
 	const te = useScopedT("editor");
+	const transcriptionSettings = useTranscriptionProvider(isTranscribing);
 	// Subscribed here, not passed down: the playhead is rewritten every animation
 	// frame during playback, and reading it in NewEditorShell re-rendered the whole
 	// editor (timeline included) once per frame — see NativePlaybackSync there. Only
@@ -942,6 +944,21 @@ export function TranscriptPane({
 	const editingHint = hasPhraseTiming
 		? te("transcriptionSettings.phraseEditingHint")
 		: ts(insertionsEnabled() ? "transcript.editingHintDev" : "transcript.editingHint");
+	// An in-flight run keeps its provider snapshot even if the user changes the
+	// setting for the next run. Prefer that known backend over the current setting.
+	const runningBackend = busyView?.status === "running" ? busyView.backend : undefined;
+	const activeProvider =
+		runningBackend === "gmi-gemini"
+			? "gmi"
+			: runningBackend?.startsWith("whispercpp-")
+				? "whisper"
+				: transcriptionSettings?.provider;
+	const privacyHint =
+		activeProvider === "gmi"
+			? te("transcriptionSettings.consent")
+			: activeProvider === "whisper"
+				? ts("transcript.whisperHint")
+				: te("transcriptionSettings.description");
 
 	if (captionsOpen) return <CaptionsPane onClose={() => setCaptionsOpen(false)} />;
 
@@ -978,9 +995,7 @@ export function TranscriptPane({
 									: ts("transcript.noTranscript")}
 					</p>
 					<p style={{ font: "400 12px var(--font-body)", color: "var(--muted)", maxWidth: 260 }}>
-						{blocked?.reason === "failed" && blocked.message
-							? blocked.message
-							: ts("transcript.whisperHint")}
+						{blocked?.reason === "failed" && blocked.message ? blocked.message : privacyHint}
 					</p>
 					<button
 						type="button"

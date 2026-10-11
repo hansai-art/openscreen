@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useScopedT } from "@/contexts/I18nContext";
+import { TRANSCRIPTION_SETTINGS_CHANGED_EVENT } from "@/hooks/useTranscriptionProvider";
 import type {
 	TranscriptionSettingsSnapshot,
 	TranscriptionSettingsUpdate,
@@ -48,6 +49,8 @@ export function TranscriptionSettings({ open }: { open: boolean }) {
 			setConsent(next.cloudConsent);
 			setApiKey("");
 			setSaved(true);
+			// No credential or settings payload is broadcast; readers refresh the public snapshot.
+			window.dispatchEvent(new Event(TRANSCRIPTION_SETTINGS_CHANGED_EVENT));
 		} catch (reason) {
 			setError(reason instanceof Error ? reason.message : te("transcriptionSettings.saveFailed"));
 		} finally {

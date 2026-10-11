@@ -6,15 +6,32 @@
 // there is nothing to press".
 
 import "@testing-library/jest-dom";
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "@/contexts/I18nContext";
+import { LOCALE_STORAGE_KEY } from "@/i18n/config";
 import type { AxcutAsset, AxcutClip } from "@/lib/ai-edition/schema";
 import type { TranscriptGateReason } from "@/lib/ai-edition/transcription/status";
 import { TranscriptPane } from "./RightPanes";
+import { TranscriptionSettings } from "./TranscriptionSettings";
 
 vi.mock("@/native/client", () => ({ nativeBridgeClient: { aiEdition: {} } }));
 vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
+
+const getSettings = vi.fn();
+const updateSettings = vi.fn();
+beforeEach(() => {
+	getSettings.mockResolvedValue({ provider: "whisper", cloudConsent: false, hasApiKey: true });
+	updateSettings.mockImplementation(async () => {
+		const next = { provider: "gmi", cloudConsent: true, hasApiKey: true };
+		getSettings.mockResolvedValue(next);
+		return next;
+	});
+	Object.defineProperty(window, "electronAPI", {
+		configurable: true,
+		value: { stt: { getSettings, updateSettings } },
+	});
+});
 
 const ASSET: AxcutAsset = {
 	id: "asset_1",
@@ -71,9 +88,57 @@ function renderPane(
 
 afterEach(() => {
 	cleanup();
+	vi.clearAllMocks();
+	localStorage.clear();
 });
 
 describe("transcript pane gating", () => {
+	it("describes GMI cloud upload during transcription without promising local-only privacy", async () => {
+		localStorage.setItem(LOCALE_STORAGE_KEY, "zh-TW");
+		getSettings.mockResolvedValue({ provider: "gmi", cloudConsent: true, hasApiKey: true });
+		renderPane({ isTranscribing: true });
+		expect(
+			await screen.findByText("允許將錄影音訊傳送至 GMI Cloud 進行轉錄，可能產生 API 費用。"),
+		).toBeInTheDocument();
+		expect(screen.queryByText(/資料不會離開本裝置/)).toBeNull();
+	});
+
+	it("states local-only privacy only after Whisper is confirmed by the provider settings", async () => {
+		localStorage.setItem(LOCALE_STORAGE_KEY, "zh-TW");
+		renderPane();
+		expect(await screen.findByText(/逐字稿使用本機 Whisper/)).toBeInTheDocument();
+		expect(screen.queryByText(/音訊傳送至 GMI Cloud/)).toBeNull();
+	});
+
+	it("refreshes the privacy statement when the user saves a different transcription provider", async () => {
+		localStorage.setItem(LOCALE_STORAGE_KEY, "zh-TW");
+		renderPane();
+		await screen.findByText(/逐字稿使用本機 Whisper/);
+		render(
+			<I18nProvider>
+				<TranscriptionSettings open />
+			</I18nProvider>,
+		);
+		await screen.findByRole("combobox", { name: "轉錄引擎" });
+		fireEvent.change(screen.getByRole("combobox"), { target: { value: "gmi" } });
+		fireEvent.click(screen.getByRole("checkbox"));
+		fireEvent.click(screen.getByRole("button", { name: "儲存轉錄設定" }));
+		await waitFor(() =>
+			expect(
+				screen.getAllByText("允許將錄影音訊傳送至 GMI Cloud 進行轉錄，可能產生 API 費用。"),
+			).toHaveLength(2),
+		);
+		expect(screen.queryByText(/資料不會離開本裝置/)).toBeNull();
+	});
+
+	it("does not claim local-only privacy when the provider settings cannot be read", async () => {
+		localStorage.setItem(LOCALE_STORAGE_KEY, "zh-TW");
+		getSettings.mockRejectedValue(new Error("settings unavailable"));
+		renderPane();
+		expect(await screen.findByText("選擇產生逐字稿與字幕的轉錄引擎。")).toBeInTheDocument();
+		expect(screen.queryByText(/資料不會離開本裝置/)).toBeNull();
+	});
+
 	it("offers the button while nothing has been attempted", () => {
 		renderPane();
 		expect(screen.getByRole("button", { name: "Transcribe now" })).toBeEnabled();
