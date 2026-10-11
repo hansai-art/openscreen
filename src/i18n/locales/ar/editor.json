@@ -143,6 +143,17 @@
 		}
 	},
 	"mediaStage": {
+		"revealOriginal": "Show original video in folder",
+		"revealFailed": "Could not open the original video location",
+		"importSrt": "Import SRT subtitles",
+		"importingSrt": "Importing SRT…",
+		"importSrtSuccess": "SRT subtitles imported",
+		"importSrtFailed": "Could not import SRT subtitles",
+		"srtInvalidFile": "Choose an SRT subtitle file (.srt).",
+		"srtTooLarge": "The SRT file must be 5 MB or smaller.",
+		"srtReplaceConfirm": "Importing this SRT will replace the existing subtitles for this video. Continue?",
+		"srtSelectionChanged": "The selected video or project changed. Select the video and import the SRT again.",
+		"srtFileLabel": "SRT subtitle file",
 		"openProjectFirst": "افتح مشروعًا أولاً",
 		"couldNotAddAsset": "تعذّرت إضافة الملف",
 		"searchPlaceholder": "بحث في الوسائط...",
@@ -434,6 +445,8 @@
 		"exportWarning": "لا توجد بطاقة رسومات متوافقة: يتم هذا التصدير على المعالج وسيستغرق وقتًا أطول بكثير من المعتاد."
 	},
 	"transcriptionSettings": {
+		"autoTranscribe": "Automatically transcribe new videos",
+		"manualSrtHint": "Turn this off to process audio yourself, then import SRT subtitles.",
 		"title": "Speech transcription",
 		"description": "Choose the engine used for transcripts and captions.",
 		"provider": "Transcription engine",
@@ -447,7 +460,7 @@
 		"saved": "Transcription settings saved",
 		"loadFailed": "Could not load transcription settings.",
 		"saveFailed": "Could not save transcription settings.",
-		"phraseHelp": "Gemini provides phrase timestamps. Captions and selections use complete phrases.",
-		"phraseEditingHint": "Editing or cutting acts on the selected phrase. Timing is estimated by Gemini."
+		"phraseHelp": "Phrase-level timestamps do not provide word-level alignment. Edit complete phrases.",
+		"phraseEditingHint": "This transcript uses phrase-level timestamps. Edit complete phrases; word-level alignment is unavailable."
 	}
 }

@@ -3,6 +3,7 @@ import "@testing-library/jest-dom";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "@/contexts/I18nContext";
+import { TRANSCRIPTION_SETTINGS_CHANGED_EVENT } from "@/hooks/useTranscriptionProvider";
 import { LOCALE_STORAGE_KEY } from "@/i18n/config";
 import { TranscriptionSettings } from "./TranscriptionSettings";
 
@@ -35,12 +36,13 @@ describe("TranscriptionSettings", () => {
 		expect(save).toBeDisabled();
 		fireEvent.change(screen.getByLabelText("GMI API 金鑰"), { target: { value: "private-token" } });
 		expect(save).toBeDisabled();
-		fireEvent.click(screen.getByRole("checkbox"));
+		fireEvent.click(screen.getByRole("checkbox", { name: /^允許將錄影音訊/ }));
 		fireEvent.click(save);
 		await waitFor(() =>
 			expect(updateSettings).toHaveBeenCalledWith({
 				provider: "gmi",
 				cloudConsent: true,
+				autoTranscribe: true,
 				apiKey: "private-token",
 			}),
 		);
@@ -57,7 +59,11 @@ describe("TranscriptionSettings", () => {
 		expect(screen.getByLabelText("GMI API 金鑰")).toHaveAttribute("type", "password");
 		fireEvent.click(screen.getByRole("button", { name: "儲存轉錄設定" }));
 		await waitFor(() =>
-			expect(updateSettings).toHaveBeenCalledWith({ provider: "gmi", cloudConsent: true }),
+			expect(updateSettings).toHaveBeenCalledWith({
+				provider: "gmi",
+				cloudConsent: true,
+				autoTranscribe: true,
+			}),
 		);
 	});
 	it("disconnects GMI and revokes automatic upload consent together", async () => {
@@ -74,6 +80,93 @@ describe("TranscriptionSettings", () => {
 				provider: "whisper",
 				cloudConsent: false,
 				apiKey: "",
+			}),
+		);
+	});
+	it("loads disabled automatic transcription and saves it without replacing the stored key", async () => {
+		getSettings.mockResolvedValue({
+			provider: "gmi",
+			cloudConsent: true,
+			hasApiKey: true,
+			autoTranscribe: false,
+		});
+		updateSettings.mockResolvedValue({
+			provider: "gmi",
+			cloudConsent: true,
+			hasApiKey: true,
+			autoTranscribe: false,
+		});
+		render(
+			<I18nProvider>
+				<TranscriptionSettings open />
+			</I18nProvider>,
+		);
+		await screen.findByText("金鑰已設定");
+		expect(screen.getByRole("checkbox", { name: "自動轉錄新影片" })).not.toBeChecked();
+		expect(screen.getByText("關閉後可自行處理音訊，再匯入 SRT 字幕。")).toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: "儲存轉錄設定" }));
+		await waitFor(() =>
+			expect(updateSettings).toHaveBeenCalledWith({
+				provider: "gmi",
+				cloudConsent: true,
+				autoTranscribe: false,
+			}),
+		);
+		expect(updateSettings.mock.calls[0][0]).not.toHaveProperty("apiKey");
+	});
+
+	it("can disable automatic transcription and broadcasts only a refresh event", async () => {
+		getSettings.mockResolvedValue({ provider: "gmi", cloudConsent: true, hasApiKey: true });
+		updateSettings.mockResolvedValue({
+			provider: "gmi",
+			cloudConsent: true,
+			hasApiKey: true,
+			autoTranscribe: false,
+		});
+		const refreshed = vi.fn();
+		window.addEventListener(TRANSCRIPTION_SETTINGS_CHANGED_EVENT, refreshed);
+		try {
+			render(
+				<I18nProvider>
+					<TranscriptionSettings open />
+				</I18nProvider>,
+			);
+			await screen.findByText("金鑰已設定");
+			const automatic = screen.getByRole("checkbox", { name: "自動轉錄新影片" });
+			expect(automatic).toBeChecked();
+			fireEvent.click(automatic);
+			fireEvent.click(screen.getByRole("button", { name: "儲存轉錄設定" }));
+			await waitFor(() => expect(refreshed).toHaveBeenCalledTimes(1));
+			expect(updateSettings).toHaveBeenCalledWith({
+				provider: "gmi",
+				cloudConsent: true,
+				autoTranscribe: false,
+			});
+			expect(refreshed.mock.calls[0][0]).not.toHaveProperty("detail");
+			expect(automatic).not.toBeChecked();
+		} finally {
+			window.removeEventListener(TRANSCRIPTION_SETTINGS_CHANGED_EVENT, refreshed);
+		}
+	});
+
+	it("does not require an active GMI credential to turn automatic transcription off", async () => {
+		getSettings.mockResolvedValue({ provider: "gmi", cloudConsent: false, hasApiKey: false });
+		render(
+			<I18nProvider>
+				<TranscriptionSettings open />
+			</I18nProvider>,
+		);
+		const automatic = await screen.findByRole("checkbox", { name: "自動轉錄新影片" });
+		await waitFor(() => expect(automatic).toBeEnabled());
+		fireEvent.click(automatic);
+		const save = screen.getByRole("button", { name: "儲存轉錄設定" });
+		expect(save).toBeEnabled();
+		fireEvent.click(save);
+		await waitFor(() =>
+			expect(updateSettings).toHaveBeenCalledWith({
+				provider: "gmi",
+				cloudConsent: false,
+				autoTranscribe: false,
 			}),
 		);
 	});

@@ -12,6 +12,7 @@ export function TranscriptionSettings({ open }: { open: boolean }) {
 	const [snapshot, setSnapshot] = useState<TranscriptionSettingsSnapshot | null>(null);
 	const [provider, setProvider] = useState<"whisper" | "gmi">("whisper");
 	const [consent, setConsent] = useState(false);
+	const [autoTranscribe, setAutoTranscribe] = useState(true);
 	const [apiKey, setApiKey] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -28,6 +29,7 @@ export function TranscriptionSettings({ open }: { open: boolean }) {
 				setSnapshot(next);
 				setProvider(next.provider);
 				setConsent(next.cloudConsent);
+				setAutoTranscribe(next.autoTranscribe !== false);
 				setError(null);
 			},
 			() => {
@@ -47,6 +49,7 @@ export function TranscriptionSettings({ open }: { open: boolean }) {
 			setSnapshot(next);
 			setProvider(next.provider);
 			setConsent(next.cloudConsent);
+			setAutoTranscribe(next.autoTranscribe !== false);
 			setApiKey("");
 			setSaved(true);
 			// No credential or settings payload is broadcast; readers refresh the public snapshot.
@@ -68,6 +71,19 @@ export function TranscriptionSettings({ open }: { open: boolean }) {
 				<h3>{te("transcriptionSettings.title")}</h3>
 			</div>
 			<p className={styles.hint}>{te("transcriptionSettings.description")}</p>
+			<label style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+				<input
+					type="checkbox"
+					checked={autoTranscribe}
+					disabled={busy || !snapshot}
+					onChange={(event) => {
+						setAutoTranscribe(event.target.checked);
+						setSaved(false);
+					}}
+				/>
+				<span>{te("transcriptionSettings.autoTranscribe")}</span>
+			</label>
+			<p className={styles.hint}>{te("transcriptionSettings.manualSrtHint")}</p>
 			<div className={styles.field}>
 				<label htmlFor="stt-provider">{te("transcriptionSettings.provider")}</label>
 				<select
@@ -134,11 +150,14 @@ export function TranscriptionSettings({ open }: { open: boolean }) {
 					disabled={
 						busy ||
 						!snapshot ||
-						(provider === "gmi" && (!consent || (!apiKey.trim() && !snapshot.hasApiKey)))
+						(provider === "gmi" &&
+							autoTranscribe &&
+							(!consent || (!apiKey.trim() && !snapshot.hasApiKey)))
 					}
 					onClick={() =>
 						void update({
 							provider,
+							autoTranscribe,
 							cloudConsent: provider === "gmi" && consent,
 							...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
 						})

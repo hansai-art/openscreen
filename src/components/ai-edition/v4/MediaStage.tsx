@@ -1,5 +1,5 @@
-import { ArrowDown, Film, Plus, RotateCw, Search, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { ArrowDown, FileUp, Film, FolderOpen, Plus, RotateCw, Search, X } from "lucide-react";
+import { type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Tooltip } from "@/components/ui/tooltip";
 import { useI18n, useScopedT } from "@/contexts/I18nContext";
@@ -17,6 +17,7 @@ import {
 import {
 	type AssetTranscriptionStatus,
 	type AssetTranscriptionView,
+	findAssetTranscript,
 	isSilentFailure,
 	transcriptHasSpeech,
 	transcriptionFailureHintKey,
@@ -30,6 +31,7 @@ import {
 import styles from "./EditorShellV4.module.css";
 
 const ASSET_MIME = "application/x-axcut-asset";
+const MAX_SRT_BYTES = 5 * 1024 * 1024;
 const THUMB_GRADIENTS = [
 	"linear-gradient(135deg, #fb7185, #f97316)",
 	"linear-gradient(135deg, #10b981, #0d986a)",
@@ -79,6 +81,43 @@ export function MediaStage({
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [detailOpen, setDetailOpen] = useState(false);
 	const [lang, setLang] = useState<TranscriptLanguageCode>("auto");
+	const [srtBusy, setSrtBusy] = useState(false);
+	const srtInput = useRef<HTMLInputElement | null>(null);
+	const mounted = useRef(true);
+	const selectionScope = useRef({ projectId, selectedId, detailOpen, revision: 0 });
+	if (
+		selectionScope.current.projectId !== projectId ||
+		selectionScope.current.selectedId !== selectedId ||
+		selectionScope.current.detailOpen !== detailOpen
+	) {
+		selectionScope.current = {
+			projectId,
+			selectedId,
+			detailOpen,
+			revision: selectionScope.current.revision + 1,
+		};
+	}
+	const pendingSrtTarget = useRef<{
+		projectId: string;
+		assetId: string;
+		revision: number;
+		transcript: AxcutTranscript | null;
+	} | null>(null);
+	const importingSrt = useRef(false);
+	useEffect(() => {
+		mounted.current = true;
+		const input = srtInput.current;
+		const cancel = () => {
+			pendingSrtTarget.current = null;
+			setSrtBusy(false);
+		};
+		input?.addEventListener("cancel", cancel);
+		return () => {
+			mounted.current = false;
+			pendingSrtTarget.current = null;
+			input?.removeEventListener("cancel", cancel);
+		};
+	}, []);
 	const regenLanguageOptions = useMemo(
 		() => sortedLanguageOptions(locale, t("mediaStage.auto")),
 		[locale, t],
@@ -97,15 +136,14 @@ export function MediaStage({
 		[assets, query],
 	);
 	const selected = assets.find((a) => a.id === selectedId) ?? null;
-	const transcript = selected
-		? (document?.transcripts?.find((t) => t.assetId === selected.id) ?? null)
-		: null;
+	const transcript = selected ? findAssetTranscript(document, selected.id) : null;
 	const detectedLanguage = detectedLanguageForTranscript(transcript);
 	const selectedTranscription: AssetTranscriptionView = selected
 		? (transcriptions[selected.id] ?? { assetId: selected.id, status: "idle" })
 		: { assetId: "", status: "idle" };
 	const selectedBusy =
 		selectedTranscription.status === "running" || selectedTranscription.status === "queued";
+	const regenerateBusy = selectedBusy || srtBusy;
 	const failureHintKey = selectedTranscription.failure
 		? transcriptionFailureHintKey(selectedTranscription.failure)
 		: null;
@@ -142,8 +180,96 @@ export function MediaStage({
 		}).catch(() => undefined);
 	};
 
+	const revealOriginal = async () => {
+		if (!selected?.originalPath) return;
+		try {
+			const result = await window.electronAPI?.revealInFolder(selected.originalPath);
+			if (!result?.success) throw new Error(result?.error || t("mediaStage.revealFailed"));
+		} catch (err) {
+			toast.error(t("mediaStage.revealFailed"), {
+				description: err instanceof Error ? err.message : String(err),
+			});
+		}
+	};
+
+	const chooseSrt = () => {
+		if (!projectId || !selected || pendingSrtTarget.current || importingSrt.current) return;
+		const target = {
+			projectId,
+			assetId: selected.id,
+			revision: selectionScope.current.revision,
+			transcript,
+		};
+		if (transcriptHasSpeech(transcript) && !window.confirm(t("mediaStage.srtReplaceConfirm"))) {
+			return;
+		}
+		pendingSrtTarget.current = target;
+		setSrtBusy(true);
+		srtInput.current?.click();
+	};
+
+	const handleSrtSelected = async (event: ChangeEvent<HTMLInputElement>) => {
+		if (importingSrt.current) return;
+		const file = event.target.files?.[0];
+		event.target.value = "";
+		const target = pendingSrtTarget.current;
+		pendingSrtTarget.current = null;
+		if (!file || !target) {
+			setSrtBusy(false);
+			return;
+		}
+		importingSrt.current = true;
+		try {
+			if (!file.name.toLowerCase().endsWith(".srt")) {
+				throw new Error(t("mediaStage.srtInvalidFile"));
+			}
+			if (file.size > MAX_SRT_BYTES) throw new Error(t("mediaStage.srtTooLarge"));
+			const text = await file.text();
+			const current = useProjectStore.getState();
+			// A file dialog can remain open across selection or project changes. Never
+			// send its late result to whichever media happens to be selected now.
+			if (
+				!mounted.current ||
+				selectionScope.current.revision !== target.revision ||
+				current.projectId !== target.projectId ||
+				current.document?.project.id !== target.projectId ||
+				!current.document.assets.some((asset) => asset.id === target.assetId)
+			) {
+				if (mounted.current) toast.info(t("mediaStage.srtSelectionChanged"));
+				return;
+			}
+			const latestTranscript = findAssetTranscript(current.document, target.assetId);
+			if (
+				latestTranscript !== target.transcript &&
+				transcriptHasSpeech(latestTranscript) &&
+				!window.confirm(t("mediaStage.srtReplaceConfirm"))
+			) {
+				return;
+			}
+			await useTranscriptionStore.getState().importSrt(target.assetId, text);
+			if (mounted.current) toast.success(t("mediaStage.importSrtSuccess"));
+		} catch (err) {
+			if (mounted.current) {
+				toast.error(t("mediaStage.importSrtFailed"), {
+					description: err instanceof Error ? err.message : String(err),
+				});
+			}
+		} finally {
+			importingSrt.current = false;
+			if (mounted.current) setSrtBusy(false);
+		}
+	};
+
 	return (
 		<div className={styles.mediaStage}>
+			<input
+				ref={srtInput}
+				type="file"
+				accept=".srt"
+				aria-label={t("mediaStage.srtFileLabel")}
+				style={{ display: "none" }}
+				onChange={(event) => void handleSrtSelected(event)}
+			/>
 			<div className={styles.mediaInner} style={{ maxWidth: detailOpen ? 1120 : 900 }}>
 				<div className={styles.mediaSearchRow}>
 					<Search size={16} style={{ color: "var(--muted)", flexShrink: 0 }} />
@@ -289,6 +415,35 @@ export function MediaStage({
 							>
 								{selected.label || basename(selected.originalPath)}
 							</div>
+							<div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+								<button
+									type="button"
+									className={styles.importBtn}
+									disabled={!selected.originalPath}
+									onClick={() => void revealOriginal()}
+									style={{ flex: 1, marginTop: 0, padding: 10, borderStyle: "solid" }}
+								>
+									<FolderOpen size={14} />
+									{t("mediaStage.revealOriginal")}
+								</button>
+								<button
+									type="button"
+									className={styles.importBtn}
+									disabled={!projectId || srtBusy}
+									onClick={chooseSrt}
+									style={{
+										flex: 1,
+										marginTop: 0,
+										padding: 10,
+										borderStyle: "solid",
+										opacity: srtBusy ? 0.6 : 1,
+										cursor: srtBusy ? "not-allowed" : "pointer",
+									}}
+								>
+									<FileUp size={14} />
+									{t(srtBusy ? "mediaStage.importingSrt" : "mediaStage.importSrt")}
+								</button>
+							</div>
 							<button
 								type="button"
 								onClick={addSelectedToTimeline}
@@ -430,9 +585,9 @@ export function MediaStage({
 											aria-label={t("mediaStage.regenerate")}
 											// `aria-disabled`, not `disabled`: a natively disabled button cannot take focus or
 											// open its tooltip. It does nothing while a transcription runs.
-											aria-disabled={selectedBusy || undefined}
+											aria-disabled={regenerateBusy || undefined}
 											onClick={
-												selectedBusy
+												regenerateBusy
 													? undefined
 													: () => void requestTranscription(selected.id, lang)
 											}
@@ -446,8 +601,8 @@ export function MediaStage({
 												color: "var(--fg-2)",
 												background: "var(--surface-2)",
 												border: "1px solid var(--border)",
-												cursor: selectedBusy ? "not-allowed" : "pointer",
-												opacity: selectedBusy ? 0.6 : 1,
+												cursor: regenerateBusy ? "not-allowed" : "pointer",
+												opacity: regenerateBusy ? 0.6 : 1,
 											}}
 										>
 											<RotateCw size={14} className={selectedBusy ? "animate-spin" : undefined} />

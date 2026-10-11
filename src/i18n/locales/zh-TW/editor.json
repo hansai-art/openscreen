@@ -143,6 +143,17 @@
 		}
 	},
 	"mediaStage": {
+		"revealOriginal": "開啟原始影片位置",
+		"revealFailed": "無法開啟原始影片位置",
+		"importSrt": "匯入 SRT 字幕",
+		"importingSrt": "正在匯入 SRT…",
+		"importSrtSuccess": "已匯入 SRT 字幕",
+		"importSrtFailed": "無法匯入 SRT 字幕",
+		"srtInvalidFile": "請選擇 SRT 字幕檔（.srt）。",
+		"srtTooLarge": "SRT 字幕檔大小需為 5 MB 以下。",
+		"srtReplaceConfirm": "匯入 SRT 將取代這部影片現有的字幕，要繼續嗎？",
+		"srtSelectionChanged": "選取的影片或專案已變更，請選取影片後重新匯入 SRT。",
+		"srtFileLabel": "SRT 字幕檔",
 		"openProjectFirst": "請先開啟專案",
 		"couldNotAddAsset": "無法新增素材",
 		"searchPlaceholder": "搜尋媒體…",
@@ -434,6 +445,8 @@
 		"exportWarning": "沒有相容的 GPU：這次匯出將在 CPU 上執行，耗時會比平常長很多。"
 	},
 	"transcriptionSettings": {
+		"autoTranscribe": "自動轉錄新影片",
+		"manualSrtHint": "關閉後可自行處理音訊，再匯入 SRT 字幕。",
 		"title": "語音轉錄",
 		"description": "選擇產生逐字稿與字幕的轉錄引擎。",
 		"provider": "轉錄引擎",
@@ -447,7 +460,7 @@
 		"saved": "轉錄設定已儲存",
 		"loadFailed": "無法載入轉錄設定。",
 		"saveFailed": "無法儲存轉錄設定。",
-		"phraseHelp": "Gemini 以句子提供時間碼；字幕顯示與選取都以整句為單位。",
-		"phraseEditingHint": "編輯或剪除會作用於選取的整句；時間由 Gemini 估計。"
+		"phraseHelp": "句級時間碼尚未逐字對齊；編輯時以整句為單位。",
+		"phraseEditingHint": "這份逐字稿使用句級時間碼，編輯時以整句為單位，未提供逐字對齊。"
 	}
 }

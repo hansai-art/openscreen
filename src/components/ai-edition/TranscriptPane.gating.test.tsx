@@ -157,7 +157,11 @@ describe("transcript pane gating", () => {
 		);
 		await screen.findByRole("combobox", { name: "轉錄引擎" });
 		fireEvent.change(screen.getByRole("combobox"), { target: { value: "gmi" } });
-		fireEvent.click(screen.getByRole("checkbox"));
+		fireEvent.click(
+			screen.getByRole("checkbox", {
+				name: "允許將錄影音訊傳送至 GMI Cloud 進行轉錄，可能產生 API 費用。",
+			}),
+		);
 		fireEvent.click(screen.getByRole("button", { name: "儲存轉錄設定" }));
 		await waitFor(() =>
 			expect(

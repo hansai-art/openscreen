@@ -168,7 +168,9 @@ describe("keyboard cut with the caret between words", () => {
 		const { editor, onTrimTimelineSpan, getByText } = renderPane([], vi.fn(), [], phrase);
 		expect(getByText("This complete phrase is one unit.")).toBeInTheDocument();
 		expect(
-			getByText("Editing or cutting acts on the selected phrase. Timing is estimated by Gemini."),
+			getByText(
+				"This transcript uses phrase-level timestamps. Edit complete phrases; word-level alignment is unavailable.",
+			),
 		).toBeInTheDocument();
 		caretBeforeWordAt(editor, 1);
 		fireEvent.keyDown(editor, { key: "Backspace" });
