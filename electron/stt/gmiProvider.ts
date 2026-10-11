@@ -169,6 +169,7 @@ export class GmiTranscriptionProvider {
 					},
 				],
 				generationConfig: {
+					thinkingConfig: { thinkingLevel: "minimal" },
 					responseMimeType: "application/json",
 					responseSchema: RESPONSE_SCHEMA,
 					maxOutputTokens: this.maxOutputTokens,
