@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { GmiTranscriptionProvider } from "./gmiProvider";
 
 const servers: ReturnType<typeof createServer>[] = [];
@@ -39,6 +39,7 @@ function reply(res: ServerResponse, segments: unknown, finishReason = "STOP"): v
 }
 
 afterEach(async () => {
+	vi.unstubAllGlobals();
 	for (const http of servers.splice(0)) {
 		http.closeAllConnections();
 		await new Promise<void>((resolve) => http.close(() => resolve()));
@@ -46,6 +47,46 @@ afterEach(async () => {
 });
 
 describe("GMI timed transcription", () => {
+	it("reports the real fetch timeout instead of trying to mutate a DOMException message", async () => {
+		const endpoint = await server((_req, _res) => {
+			// A real request that never responds produces Node's read-only TimeoutError DOMException.
+		});
+		const failure = await new GmiTranscriptionProvider({ endpoint, timeoutMs: 30 })
+			.transcribe({ samples: new Float32Array(16_000), apiKey: "test-secret" })
+			.catch((error: unknown) => error);
+		expect(failure).toBeInstanceOf(Error);
+		expect(failure).toMatchObject({ name: "TimeoutError" });
+		expect((failure as Error).message).toMatch(/timeout/i);
+		expect((failure as Error).message).not.toMatch(/Cannot set property|only a getter/i);
+	});
+
+	it("redacts a frozen network error without mutating the original error", async () => {
+		const original = new Error("network rejected test-secret");
+		original.name = "NetworkError";
+		Object.freeze(original);
+		vi.stubGlobal("fetch", () => Promise.reject(original));
+		const failure = await new GmiTranscriptionProvider()
+			.transcribe({ samples: new Float32Array(16_000), apiKey: "test-secret" })
+			.catch((error: unknown) => error);
+		expect(failure).toMatchObject({ name: "NetworkError", message: "network rejected [REDACTED]" });
+		expect(failure).not.toBe(original);
+		expect(original.message).toBe("network rejected test-secret");
+	});
+
+	it("identifies a response-body deadline as a timeout rather than user cancellation", async () => {
+		const endpoint = await server((_req, res) => {
+			res.writeHead(200, { "Content-Type": "application/json" });
+			res.flushHeaders();
+			res.write('{"candidates":[');
+			// Headers succeed; the unfinished body must still be bounded by the deadline.
+		});
+		const failure = await new GmiTranscriptionProvider({ endpoint, timeoutMs: 100 })
+			.transcribe({ samples: new Float32Array(16_000), apiKey: "test-secret" })
+			.catch((error: unknown) => error);
+		expect(failure).toMatchObject({ name: "TimeoutError" });
+		expect((failure as Error).message).toMatch(/timeout/i);
+	});
+
 	it("sends audio only in the request body and returns Taiwan Traditional timed phrases", async () => {
 		let body = "";
 		let authorization = "";

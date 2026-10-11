@@ -559,10 +559,9 @@ export class SttManager {
 						signal: controller.signal,
 					})
 					.catch((error: unknown) => {
-						if (
-							controller.signal.aborted ||
-							(error instanceof Error && error.name === "AbortError")
-						) {
+						// Only our own signal proves a user cancel. A transport may also
+						// reject with AbortError; that must surface as a failed cloud request.
+						if (controller.signal.aborted) {
 							throw cancelledError();
 						}
 						throw new Error(

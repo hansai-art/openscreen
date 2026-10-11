@@ -67,25 +67,11 @@ public final class AudioTrackMixer {
 		static let bytesPerFrame = channelCount * MemoryLayout<Int16>.size
 		/// 10 ms — the chunk size the Windows mixer emits too.
 		static let chunkFrames = sampleRate / 100
-		/// How long a source may deliver nothing at all before it is written off and chunks go
-		/// out without it.
-		///
-		/// Measured from that source's own last delivery, and deliberately not from how far
-		/// behind the clock its coverage is. Those differ for a source that is alive but
-		/// arriving late, and the difference is the whole take: a capture path whose buffers
-		/// reach us a fixed delay after the audio they describe would be permanently "behind",
-		/// so writing it off for that would emit silence, drop the real samples as
-		/// already-passed, and do it again for every chunk. Asking "has it stopped delivering"
-		/// instead is immune to any constant latency, and it is the actual question — a dead
-		/// microphone stops, a slow one does not.
-		///
-		/// Nothing is shifted by this number and no sample moves because of it; it only decides
-		/// when to stop waiting. That is what separates it from the bounded start-up rebase in
-		/// PR #343, where the same 250 ms moved real audio. The value is two orders of magnitude
-		/// above the ~2.5 ms delivery skew between two outputs of the same SCStream, so ordinary
-		/// jitter never trips it, and the file is written offline, so the latency it costs at a
-		/// transition into silence costs the recording nothing.
-		static let emissionGraceFrames = sampleRate / 4
+		/// Preserve one second for missing packets, even after a source goes quiet. A
+		/// camera/OS callback stall must not let the ticker irreversibly replace captured
+		/// PCM with zeros. Fully covered chunks still emit immediately; timestamps never
+		/// shift, and finish bypasses the watermark at the frozen stop endpoint.
+		static let missingDataWatermarkFrames = sampleRate
 		/// Longest hole a source may silence-pad across. Past this the source has been dead long
 		/// enough that padding would materialize however long the outage lasted — the cursor
 		/// carries the track across the gap instead.
@@ -124,16 +110,26 @@ public final class AudioTrackMixer {
 	private var pending: [CMSampleBuffer] = []
 	private var didWarnAboutBacklog = false
 	private var didWarnAboutDecode: Set<Int> = []
+	private var timingDiagnostics = [AudioTimingDiagnostics](repeating: AudioTimingDiagnostics(), count: Source.allCases.count)
+	private let timingEventHandler: (([String: Any]) -> Void)?
+	private var didEmitTimingSummary = false
+	private var previousDrainHost: Double?
+	private var maxDrainGapSeconds = 0.0
+	private var maxDrainSeconds = 0.0
+	private var maxDecodeSeconds = 0.0
+	private var maxAppendSeconds = 0.0
 
 	public init(
 		input: MixedAudioSink,
 		includesSystemAudio: Bool,
 		includesMicrophone: Bool,
 		microphoneGain: Double,
-		clock: @escaping TimelineClock
+		clock: @escaping TimelineClock,
+		timingEventHandler: (([String: Any]) -> Void)? = nil
 	) {
 		self.input = input
 		self.clock = clock
+		self.timingEventHandler = timingEventHandler
 		self.includesSystemAudio = includesSystemAudio
 		self.includesMicrophone = includesMicrophone
 		// The request carries MIC_GAIN_BOOST (1.4); Windows applies it unconditionally and so
@@ -160,7 +156,7 @@ public final class AudioTrackMixer {
 		)
 	}
 
-	public func ingest(_ sampleBuffer: CMSampleBuffer, from source: Source) {
+	public func ingest(_ sampleBuffer: CMSampleBuffer, from source: Source, timing: AudioDeliveryTiming? = nil) {
 		guard includes(source), let anchor else {
 			return
 		}
@@ -168,6 +164,7 @@ public final class AudioTrackMixer {
 		guard presentationTime.isValid, presentationTime.isNumeric else {
 			return
 		}
+		let decodeStart = diagnosticHostSeconds()
 		guard let frames = decodeInterleavedStereo(sampleBuffer, gain: gain(for: source)),
 			!frames.isEmpty
 		else {
@@ -177,14 +174,16 @@ public final class AudioTrackMixer {
 			return
 		}
 
+		maxDecodeSeconds = max(maxDecodeSeconds, diagnosticHostSeconds() - decodeStart)
 		let now = clock()
 		let startFrame = frameIndex(of: presentationTime, from: anchor)
-		noteDelivery(source, from: startFrame, frameCount: Int64(frames.count / MixFormat.channelCount))
+		let frameCount = Int64(frames.count / MixFormat.channelCount)
+		timingDiagnostics[source.rawValue].recordBuffer(startFrame: startFrame, endFrame: startFrame + frameCount,
+			endTime: CMTimeAdd(presentationTime, CMTime(value: frameCount, timescale: CMTimeScale(MixFormat.sampleRate))),
+			anchor: anchor, timing: timing)
+		noteDelivery(source, from: startFrame, frameCount: frameCount)
 		sources[source.rawValue].ingest(frames, atFrame: startFrame)
-		// Where the clock stood when this source last said anything — not where its samples
-		// sit. See `emissionGraceFrames`.
-		sources[source.rawValue].lastDeliveryFrame = frameIndex(of: now, from: anchor)
-		drain(upTo: now, grace: Int64(MixFormat.emissionGraceFrames))
+		drain(upTo: now, holdback: Int64(MixFormat.missingDataWatermarkFrames))
 	}
 
 	/// Advances the cursor to wherever the clock now stands, emitting silence for anything no
@@ -194,7 +193,7 @@ public final class AudioTrackMixer {
 		guard anchor != nil else {
 			return
 		}
-		drain(upTo: clock(), grace: Int64(MixFormat.emissionGraceFrames))
+		drain(upTo: clock(), holdback: Int64(MixFormat.missingDataWatermarkFrames))
 	}
 
 	/// Carries the track out to the end of the take and writes out everything still buffered.
@@ -203,13 +202,14 @@ public final class AudioTrackMixer {
 	/// container agree on where the recording ended.
 	public func finish(atSourceTime end: CMTime) {
 		if anchor != nil {
-			// No grace: capture has stopped, so a source that has not covered a chunk by now
-			// never will, and waiting on it would only truncate the tail.
-			drain(upTo: end, grace: 0)
+			// Flush queued samples at the frozen stop endpoint without an extra second of
+			// recording. This does not recover producer callbacks that arrive after teardown.
+			drain(upTo: end, holdback: 0)
 			closeDeliveryHoles()
 			emitTimelineSummary()
 		}
 		flushPending(force: true)
+		emitTimingSummaryOnce()
 	}
 
 	private func warnAboutDecodeFailure(_ source: Source, _ sampleBuffer: CMSampleBuffer) {
@@ -284,8 +284,8 @@ public final class AudioTrackMixer {
 	/// `droppedSeconds` is the cost side of the same ledger, and it should be zero. It counts
 	/// audio a source delivered describing a span the cursor had already emitted, which cannot
 	/// be placed any more. That happens only when a source went quiet for longer than
-	/// `emissionGraceFrames` and then handed over the period it was quiet for, so anything above
-	/// zero here says the grace is too short for that capture path.
+	/// the missing-data watermark and then handed over the period it was quiet for, so anything above
+	/// zero here says the watermark is too short for that capture path.
 	///
 	/// `trimmedSeconds` is deliberately not part of that number, though it is discarded by the
 	/// same code. It counts what was cut while a source was still catching up to a cursor that
@@ -321,6 +321,32 @@ public final class AudioTrackMixer {
 		public let longestHoleSeconds: Double
 		public let droppedSeconds: Double
 		public let trimmedSeconds: Double
+	}
+
+	public func timingReport(for source: Source) -> [String: Any] { timingDiagnostics[source.rawValue].report() }
+
+	private func diagnosticHostSeconds() -> Double { CMTimeGetSeconds(CMClockGetTime(CMClockGetHostTimeClock())) }
+
+	private func emitTimingSummaryOnce() {
+		guard anchor != nil, !didEmitTimingSummary else { return }
+		didEmitTimingSummary = true
+		var report: [String: Any] = ["event": "audio-timing", "code": "audio-timing-summary",
+			"schemaVersion": 1, "trackSeconds": seconds(cursor), "missingDataWatermarkSeconds": 1,
+			"maxDrainEventGapSeconds": maxDrainGapSeconds, "maxDrainWallSeconds": maxDrainSeconds,
+			"maxDecodeWallSeconds": maxDecodeSeconds, "maxAppendWallSeconds": maxAppendSeconds]
+		report["anchorHostTimeSeconds"] = anchor.map { CMTimeGetSeconds($0) }
+		var discarded: [String] = []
+		for source in Source.allCases where includes(source) {
+			let name = source == .system ? "system" : "microphone"
+			report[name] = timingReport(for: source)
+			let dropped = deliveryReport(for: source).droppedSeconds
+			if dropped >= 0.1 { discarded.append("\(name): \(String(format: "%.3f", dropped)) s") }
+		}
+		(timingEventHandler ?? emit)(report)
+		if !discarded.isEmpty {
+			(timingEventHandler ?? emit)(["event": "warning", "code": "audio-source-late-dropped",
+				"message": "Audio timing discarded buffered spans (\(discarded.joined(separator: "; "))). The recording may contain audio gaps; repeated source timestamps can also contribute to this count."])
+		}
 	}
 
 	public func deliveryReport(for source: Source) -> DeliveryReport {
@@ -363,50 +389,44 @@ public final class AudioTrackMixer {
 		}
 	}
 
-	/// Emits every chunk the clock has passed.
-	///
-	/// Two ways a chunk goes out. Normally it goes out as soon as every live source covers it,
-	/// which costs no latency at all. Otherwise it goes out once every source still missing
-	/// from it has gone `grace` without delivering anything — the case a purely data-driven
-	/// mixer has no answer for, because when no source is delivering there is nothing to
-	/// measure against. The clock supplies that reference whether one source has gone quiet,
-	/// both have, or neither has ever delivered a single buffer.
-	///
-	/// `chunkEnd <= limitFrame` bounds the loop: a chunk covering time that has not happened yet
-	/// is never emitted, so the cursor can never outrun the take.
-	private func drain(upTo limit: CMTime, grace: Int64) {
-		guard let anchor, limit.isValid, limit.isNumeric else {
-			return
-		}
+	/// Writes covered chunks immediately. Missing data is only declared silence after its
+	/// timestamp is at least one second behind the host clock, regardless of source liveness.
+	/// Unlike the old last-arrival grace, a stall cannot release the entire recent window.
+	private func drain(upTo limit: CMTime, holdback: Int64) {
+		guard let anchor, limit.isValid, limit.isNumeric else { return }
+		let drainStart = diagnosticHostSeconds()
+		if let previousDrainHost { maxDrainGapSeconds = max(maxDrainGapSeconds, drainStart - previousDrainHost) }
+		previousDrainHost = drainStart
+		defer { maxDrainSeconds = max(maxDrainSeconds, diagnosticHostSeconds() - drainStart) }
 		let limitFrame = frameIndex(of: limit, from: anchor)
-
+		let missingDataDeadline = limitFrame - holdback
+		let includedSources = Source.allCases.filter { includes($0) }
 		while true {
 			let chunkEnd = cursor + Int64(MixFormat.chunkFrames)
-			guard chunkEnd <= limitFrame else {
-				break
+			guard chunkEnd <= limitFrame else { break }
+			let covered = includedSources.allSatisfy {
+				let source = sources[$0.rawValue]
+				return source.hasDelivered && source.endFrame >= chunkEnd
 			}
-
-			let live = sources.indices.filter { sources[$0].hasDelivered && !sources[$0].isStalled }
-			let laggards = live.filter { sources[$0].endFrame < chunkEnd }
-			if !laggards.isEmpty {
-				guard laggards.allSatisfy({ limitFrame >= sources[$0].lastDeliveryFrame + grace })
-				else {
-					break
-				}
-				// …and each stays stalled until its next buffer arrives, so one source going
-				// quiet can never hold the track back chunk after chunk.
-				for index in laggards {
-					sources[index].isStalled = true
-				}
-			}
-
-			emitChunk()
+			guard covered || chunkEnd <= missingDataDeadline else { break }
+			emitChunk(reason: holdback == 0 ? "finish" : covered ? "all-sources-covered" : "missing-watermark", hostFrame: limitFrame)
 		}
 	}
 
-	private func emitChunk() {
+	private func emitChunk(reason: String, hostFrame: Int64) {
 		var mix = [Float](repeating: 0, count: MixFormat.chunkFrames * MixFormat.channelCount)
 		for index in sources.indices {
+			// Read scalar metadata only: retaining SourceTimeline would copy its PCM storage
+			// on the next mutation and add avoidable capture-path pressure.
+			let startFrame = sources[index].startFrame, endFrame = sources[index].endFrame
+			let dropEnd = min(cursor, endFrame)
+			if includes(Source.allCases[index]) {
+				if sources[index].hasPlaced && dropEnd > startFrame {
+					timingDiagnostics[index].recordDrop(startFrame: startFrame, endFrame: dropEnd, cursor: cursor, hostFrame: hostFrame)
+				}
+				timingDiagnostics[index].recordEmission(startFrame: cursor, endFrame: cursor + Int64(MixFormat.chunkFrames),
+					reason: reason, lacksPendingPCM: startFrame > cursor || endFrame < cursor + Int64(MixFormat.chunkFrames))
+			}
 			sources[index].drain(into: &mix, from: cursor, frameCount: MixFormat.chunkFrames)
 		}
 
@@ -423,11 +443,17 @@ public final class AudioTrackMixer {
 		flushPending(force: false)
 	}
 
+	private func appendMeasuringLatency(_ buffer: CMSampleBuffer) {
+		let start = diagnosticHostSeconds()
+		input.append(buffer)
+		maxAppendSeconds = max(maxAppendSeconds, diagnosticHostSeconds() - start)
+	}
+
 	/// `append` is not advisory backpressure — it raises an NSException when the input is not
 	/// ready — so every path here waits for readiness rather than pushing through it.
 	private func flushPending(force: Bool) {
 		while !pending.isEmpty && input.isReadyForMoreMediaData {
-			input.append(pending.removeFirst())
+			appendMeasuringLatency(pending.removeFirst())
 		}
 		if force {
 			// Teardown: this is the tail's last chance, and the writer is still draining, so
@@ -435,7 +461,7 @@ public final class AudioTrackMixer {
 			let deadline = Date().addingTimeInterval(MixFormat.finalFlushTimeout)
 			while !pending.isEmpty {
 				if input.isReadyForMoreMediaData {
-					input.append(pending.removeFirst())
+					appendMeasuringLatency(pending.removeFirst())
 					continue
 				}
 				if Date() >= deadline {
@@ -751,13 +777,8 @@ public final class AudioTrackMixer {
 	private struct SourceTimeline {
 		private(set) var samples: [Float] = []
 		private(set) var startFrame: Int64 = 0
-		/// A source only counts towards "is this chunk complete" once it has produced audio…
+		/// First delivery establishes the source's known timestamp coverage.
 		private(set) var hasDelivered = false
-		/// …and stops counting once it has gone `emissionGraceFrames` without producing any.
-		var isStalled = false
-		/// Where the clock stood at this source's most recent delivery, in absolute frames.
-		/// The mixer sets it, because only the mixer holds the clock.
-		var lastDeliveryFrame: Int64 = 0
 		/// Whether any of this source's audio has actually reached the mix. Until it has, the
 		/// source is not yet established on the timeline and cannot be "late" — see
 		/// `discardFrames(before:)`.
@@ -772,7 +793,6 @@ public final class AudioTrackMixer {
 
 		mutating func ingest(_ frames: [Float], atFrame frameIndex: Int64) {
 			hasDelivered = true
-			isStalled = false
 
 			if samples.isEmpty {
 				startFrame = frameIndex
@@ -841,8 +861,8 @@ public final class AudioTrackMixer {
 		///
 		/// Before a source has placed anything, it is still catching up and cannot be late.
 		/// `beginTimeline` opens the writer session on the first video frame, and a source only
-		/// joins the quorum that can hold the cursor back once it `hasDelivered`, so the track
-		/// starts moving before the audio tap has said anything at all. Whatever the tap then
+		/// only establishes known coverage after its first delivery. The bounded watermark
+		/// can still advance through silence when no audio tap has said anything. Whatever the tap then
 		/// hands over first describes a span the cursor has already crossed — a few tens of
 		/// milliseconds of it against a live ScreenCaptureKit, and all of a take's audio if the
 		/// tap opened before the session did. Cutting that is how the origin stays anchored to
@@ -850,7 +870,7 @@ public final class AudioTrackMixer {
 		/// and it is the design working.
 		///
 		/// Once a source has placed audio, a discard means it went quiet for longer than
-		/// `emissionGraceFrames`, had silence emitted in its place, and then handed over the
+		/// the missing-data watermark, had silence emitted in its place, and then handed over the
 		/// period it was quiet for. That is captured audio genuinely lost: `droppedFrames`, and
 		/// it should be zero.
 		private mutating func discardFrames(before cursor: Int64) {

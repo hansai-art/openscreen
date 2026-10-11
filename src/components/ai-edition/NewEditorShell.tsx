@@ -385,7 +385,11 @@ export function NewEditorShell() {
 		void (async () => {
 			if (!window.electronAPI) return;
 			try {
-				if (await importPendingRecording((warning) => toast.warning(warning))) {
+				if (
+					await importPendingRecording((warning) =>
+						toast.warning(warning, { duration: Infinity, closeButton: true }),
+					)
+				) {
 					toast.success("Recording added to a new project");
 					return;
 				}

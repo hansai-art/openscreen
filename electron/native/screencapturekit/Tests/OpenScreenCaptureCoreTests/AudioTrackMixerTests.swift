@@ -265,8 +265,8 @@ final class AudioTrackMixerTests: XCTestCase {
 	/// fixed delay after the audio they describe is late by that delay forever. Every chunk
 	/// would go out as silence and every real sample would then arrive too late to be placed,
 	/// so the source would be silent for the whole recording rather than merely delayed. The
-	/// grace is measured from the source's last delivery instead, which a constant latency
-	/// never trips. 400 ms here, comfortably past the 250 ms grace.
+	/// covered chunks can emit immediately, and the one-second missing-data watermark
+	/// protects the remaining tail. 400 ms here stays within that bounded window.
 	func testASourceThatIsAlwaysLateIsStillHeard() {
 		let sink = RecordingSink()
 		let clock = TestClock(.zero)
@@ -379,7 +379,7 @@ final class AudioTrackMixerTests: XCTestCase {
 		mixer.ingest(
 			makeSourceBuffer(
 				burst(seconds: 0.5, left: 0.5, right: 0.5),
-				at: CMTime(seconds: 0.6, preferredTimescale: 48_000),
+				at: CMTime(seconds: 0.5, preferredTimescale: 48_000),
 				nonInterleaved: true
 			),
 			from: .system
@@ -391,6 +391,41 @@ final class AudioTrackMixerTests: XCTestCase {
 		XCTAssertEqual(report.droppedSeconds, 0.5, accuracy: 0.011)
 		// Nothing here predates the session, so the other half of the split stays clear.
 		XCTAssertEqual(report.trimmedSeconds, 0, accuracy: 0.011)
+	}
+
+	/// Both producers captured a continuous signal. Their callbacks stall for 350 ms,
+	/// while the independent audio ticker keeps running, then deliver the original PTS.
+	/// This must be buffered rather than replaced by irreversible silence.
+	func testContinuousSourcesDelayed350msDoNotLoseCapturedAudio() {
+		let sink = RecordingSink()
+		let clock = TestClock(.zero)
+		let mixer = makeMixer(sink: sink, clock: clock, includesMicrophone: true, microphoneGain: 1)
+		mixer.beginTimeline(at: clock.now)
+		var held: [Int] = []
+		func deliver(_ step: Int) {
+			let time = CMTime(value: CMTimeValue(step * 480), timescale: 48_000)
+			mixer.ingest(makeSourceBuffer(burst(seconds: 0.01, left: 0.5, right: 0), at: time, nonInterleaved: true), from: .system)
+			mixer.ingest(makeSourceBuffer(burst(seconds: 0.01, left: 0, right: 0.25), at: time, nonInterleaved: false), from: .microphone)
+		}
+		for step in 0..<200 {
+			mixer.tick()
+			if (50..<85).contains(step) {
+				held.append(step)
+			} else {
+				if step == 85 { for captured in held { deliver(captured) } }
+				deliver(step)
+			}
+			clock.advance(seconds: 0.01)
+		}
+		mixer.finish(atSourceTime: clock.now)
+		let frames = mixedFrames(sink)
+		let delayed = frames[(24_000 * 2)..<(40_800 * 2)]
+		XCTAssertTrue(delayed.allSatisfy { abs($0) > audibleThreshold }, "captured 0.50 to 0.85 s became silence")
+		XCTAssertEqual(seconds(ofFrames: frames), 2, accuracy: 0.00001)
+		for source in [AudioTrackMixer.Source.system, .microphone] {
+			XCTAssertEqual(mixer.deliveryReport(for: source).undeliveredSeconds, 0, accuracy: 0.00001)
+			XCTAssertEqual(mixer.deliveryReport(for: source).droppedSeconds, 0, accuracy: 0.00001)
+		}
 	}
 
 	// MARK: - Pause

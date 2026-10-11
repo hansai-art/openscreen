@@ -21,12 +21,12 @@ import OpenScreenCaptureCore
 @available(macOS 14.2, *)
 final class SystemAudioTap {
 	private let queue = DispatchQueue(label: "app.openscreen.sck-helper.system-audio-tap")
-	private let onBuffer: (CMSampleBuffer) -> Void
+	private let onBuffer: (CMSampleBuffer, CMTime) -> Void
 	private var tapID = AudioObjectID(kAudioObjectUnknown)
 	private var aggregateID = AudioObjectID(kAudioObjectUnknown)
 	private var procID: AudioDeviceIOProcID?
 
-	init(onBuffer: @escaping (CMSampleBuffer) -> Void) {
+	init(onBuffer: @escaping (CMSampleBuffer, CMTime) -> Void) {
 		self.onBuffer = onBuffer
 	}
 
@@ -79,12 +79,13 @@ final class SystemAudioTap {
 		let onBuffer = self.onBuffer
 		try Self.check(
 			AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateID, queue) { _, input, inputTime, _, _ in
+				let callbackHostTime = CMClockGetTime(CMClockGetHostTimeClock())
 				let timestamp = inputTime.pointee
 				let hostTime = timestamp.mFlags.contains(.hostTimeValid)
 					? timestamp.mHostTime
 					: mach_absolute_time()
 				if let sampleBuffer = makeAudioSampleBuffer(copying: input, format: format, hostTime: hostTime) {
-					onBuffer(sampleBuffer)
+					onBuffer(sampleBuffer, callbackHostTime)
 				}
 			},
 			"AudioDeviceCreateIOProcIDWithBlock"
@@ -146,7 +147,7 @@ final class SystemAudioTap {
 	/// answered (or at once when it was already answered). There is no public way to read the
 	/// answer: a refused tap runs, and records silence.
 	static func requestAccess() throws {
-		let tap = SystemAudioTap { _ in }
+		let tap = SystemAudioTap { _, _ in }
 		defer { tap.stop() }
 		try tap.start()
 	}

@@ -224,9 +224,9 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 			let microphone = AVCaptureMicrophone(
 				deviceID: request.audio.microphone.deviceId,
 				deviceName: request.audio.microphone.deviceName,
-				onBuffer: { [weak self] buffer in
+				onBuffer: { [weak self] buffer, callbackHostTime in
 					// The converted buffer is immutable; the audio queue owns ingestion.
-					let delivery = DispatchWorkItem { [weak self] in self?.ingestMicrophoneAudio(buffer) }
+					let delivery = DispatchWorkItem { [weak self] in self?.ingestMicrophoneAudio(buffer, callbackHostTime: callbackHostTime) }
 					self?.audioQueue.async(execute: delivery)
 				},
 				onFailure: { [weak self] message in
@@ -312,12 +312,12 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 		guard tapsSystemAudio, #available(macOS 14.2, *) else {
 			return
 		}
-		let tap = SystemAudioTap { [weak self] sampleBuffer in
+		let tap = SystemAudioTap { [weak self] sampleBuffer, callbackHostTime in
 			guard let self else {
 				return
 			}
 			self.audioQueue.async {
-				self.ingestTappedSystemAudio(sampleBuffer)
+				self.ingestTappedSystemAudio(sampleBuffer, callbackHostTime: callbackHostTime)
 			}
 		}
 		systemAudioTap = tap
@@ -358,10 +358,11 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
 	/// Audio queue. The tap's audio takes the same pause and retime path ScreenCaptureKit's
 	/// system audio took in `stream(_:didOutputSampleBuffer:of:)`.
-	private func ingestTappedSystemAudio(_ sampleBuffer: CMSampleBuffer) {
+	private func ingestTappedSystemAudio(_ sampleBuffer: CMSampleBuffer, callbackHostTime: CMTime) {
 		guard acceptsTappedAudio else {
 			return
 		}
+		let ingestionHostTime = CMClockGetTime(hostClock)
 		let pauseState = currentPauseState()
 		if pauseState.paused {
 			return
@@ -369,15 +370,24 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 		guard let sampleBuffer = retimedSampleBuffer(sampleBuffer, subtracting: pauseState.offset) else {
 			return
 		}
-		audioMixer?.ingest(sampleBuffer, from: .system)
+		audioMixer?.ingest(sampleBuffer, from: .system, timing: deliveryTiming(callbackHostTime: callbackHostTime,
+			ingestionHostTime: ingestionHostTime, pauseOffset: pauseState.offset))
 	}
 
-	private func ingestMicrophoneAudio(_ sampleBuffer: CMSampleBuffer) {
+	private func ingestMicrophoneAudio(_ sampleBuffer: CMSampleBuffer, callbackHostTime: CMTime) {
 		guard acceptsMicrophoneAudio else { return }
+		let ingestionHostTime = CMClockGetTime(hostClock)
 		let pauseState = currentPauseState()
 		guard !pauseState.paused,
 			let buffer = retimedSampleBuffer(sampleBuffer, subtracting: pauseState.offset) else { return }
-		audioMixer?.ingest(buffer, from: .microphone)
+		audioMixer?.ingest(buffer, from: .microphone, timing: deliveryTiming(callbackHostTime: callbackHostTime,
+			ingestionHostTime: ingestionHostTime, pauseOffset: pauseState.offset))
+	}
+
+	private func deliveryTiming(callbackHostTime: CMTime, ingestionHostTime: CMTime, pauseOffset: CMTime) -> AudioDeliveryTiming {
+		AudioDeliveryTiming(callbackHostTime: callbackHostTime, ingestionHostTime: ingestionHostTime,
+			callbackTimelineTime: CMTimeSubtract(callbackHostTime, pauseOffset),
+			ingestionTimelineTime: CMTimeSubtract(ingestionHostTime, pauseOffset))
 	}
 
 	func pause() {
@@ -414,7 +424,9 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 		}
 
 		if type == .audio {
-			audioMixer?.ingest(sampleBuffer, from: .system)
+			let arrived = CMClockGetTime(hostClock)
+			audioMixer?.ingest(sampleBuffer, from: .system, timing: deliveryTiming(callbackHostTime: arrived,
+				ingestionHostTime: arrived, pauseOffset: pauseState.offset))
 			return
 		}
 

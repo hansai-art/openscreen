@@ -175,6 +175,45 @@ describe("readNativeMacStopOutcome", () => {
 		});
 	});
 
+	it("keeps finalized output and warns about discarded audio timing spans", () => {
+		const message =
+			"The recording may contain audio gaps; repeated source timestamps can contribute.";
+		const timing = line({ event: "warning", code: "audio-source-late-dropped", message });
+		const outcome = readNativeMacStopOutcome(started + timing + stopped, null, TARGET);
+		expect(outcome).toMatchObject({ ok: true, screenVideoPath: TARGET });
+		expect(outcome?.ok && outcome.warning).toContain(message);
+	});
+
+	it("keeps audio timing and source disappearance in the same saved-file warning", () => {
+		const timing = line({
+			event: "warning",
+			code: "audio-source-late-dropped",
+			message: "Audio may contain gaps.",
+		});
+		const outcome = readNativeMacStopOutcome(
+			started + timing + captureStopped + stopped,
+			null,
+			TARGET,
+		);
+		expect(outcome).toMatchObject({ ok: true, screenVideoPath: TARGET });
+		expect(outcome?.ok && outcome.warning).toContain("Recording ended early");
+		expect(outcome?.ok && outcome.warning).toContain("Audio may contain gaps.");
+	});
+
+	it("does not let an audio timing warning hide a terminal writer failure", () => {
+		const timing = line({
+			event: "warning",
+			code: "audio-source-late-dropped",
+			message: "Audio may contain gaps.",
+		});
+		const outcome = readNativeMacStopOutcome(
+			started + timing + writerFailed,
+			{ code: 1, signal: null },
+			TARGET,
+		);
+		expect(outcome).toMatchObject({ ok: false, reason: "helper-failed" });
+	});
+
 	it("keeps both the early end and the lost system audio in one warning", () => {
 		const tapFailed = line({ event: "warning", code: "system-audio-unavailable" });
 		const outcome = readNativeMacStopOutcome(

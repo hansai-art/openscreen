@@ -208,10 +208,12 @@ export class GmiTranscriptionProvider {
 			};
 		} catch (error: unknown) {
 			if (request.signal?.aborted) throw new DOMException("Transcription cancelled", "AbortError");
-			if (error instanceof Error) {
-				error.message = error.message.split(key).join("[REDACTED]");
-			}
-			throw error;
+			// DOMException.message is getter-only; frozen provider errors are immutable too.
+			// Wrap a sanitized copy so redaction cannot mask the original timeout/network error.
+			const message = error instanceof Error ? error.message : String(error);
+			const sanitized = new Error(message.split(key).join("[REDACTED]"));
+			sanitized.name = error instanceof Error ? error.name : "Error";
+			throw sanitized;
 		} finally {
 			await cleanupWav(wavPath);
 		}

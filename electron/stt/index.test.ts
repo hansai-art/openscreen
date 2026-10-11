@@ -156,6 +156,24 @@ describe("SttManager", () => {
 		expect(fakeWhisperServer.transcribe).not.toHaveBeenCalled();
 	});
 
+	it("surfaces an unexpected transport AbortError when the user has not cancelled", async () => {
+		fakeGmiTranscribe.mockRejectedValueOnce(
+			new DOMException("GMI response body aborted", "AbortError"),
+		);
+		const mgr = new SttManager({
+			getProviderConfig: () => ({
+				provider: "gmi",
+				cloudConsent: true,
+				apiKey: "cloud-secret",
+			}),
+		});
+		const failure = await mgr
+			.transcribe({ samples: new Float32Array(16_000) })
+			.catch((error: unknown) => error);
+		expect(failure).toMatchObject({ name: "Error" });
+		expect((failure as Error).message).toMatch(/GMI transcription failed.*response body aborted/);
+	});
+
 	it("rejects empty GMI input instead of reporting an unattempted empty transcript as success", async () => {
 		const mgr = new SttManager({
 			getProviderConfig: () => ({

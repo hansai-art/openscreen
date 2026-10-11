@@ -147,7 +147,129 @@ private func source(seconds: Double, at: Double, left: Float, right: Float) thro
 			try require(!started && screenStarts == 0, "already stopped screen started hardware")
 			print("PASS: screen stopped before startup never opens hardware")
 		} catch { failures.append("screen pre-cancel"); print("FAIL: screen pre-cancel") }
+		check("continuous sources delayed 350ms preserve captured audio") {
+			let sink = Sink(); var now = CMTime(seconds: 10, preferredTimescale: 48_000)
+			let mixer = AudioTrackMixer(input: sink, includesSystemAudio: true, includesMicrophone: true, microphoneGain: 1, clock: { now })
+			mixer.beginTimeline(at: now); var held: [Int] = []
+			func deliver(_ step: Int) throws {
+				let at = 10 + Double(step) / 100
+				let pts = CMTime(value: CMTimeValue(480_000 + step * 480), timescale: 48_000)
+				let system = try source(seconds: 0.01, at: at, left: 0.5, right: 0)
+				let mic = try source(seconds: 0.01, at: at, left: 0, right: 0.25)
+				mixer.ingest(copyAudioSampleBuffer(system, convertingTime: { _ in pts })!, from: .system)
+				mixer.ingest(copyAudioSampleBuffer(mic, convertingTime: { _ in pts })!, from: .microphone)
+			}
+			for step in 0..<200 {
+				mixer.tick()
+				if (50..<85).contains(step) { held.append(step) }
+				else {
+					if step == 85 { for captured in held { try deliver(captured) } }
+					try deliver(step)
+				}
+				now = CMTimeAdd(now, CMTime(value: 480, timescale: 48_000))
+			}
+			mixer.finish(atSourceTime: now)
+			var pcm: [Int16] = []
+			for buffer in sink.buffers {
+				if let block = CMSampleBufferGetDataBuffer(buffer) {
+					var chunk = [Int16](repeating: 0, count: CMSampleBufferGetNumSamples(buffer) * 2)
+					_ = chunk.withUnsafeMutableBytes { CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: $0.count, destination: $0.baseAddress!) }
+					pcm.append(contentsOf: chunk)
+				}
+			}
+			let delayed = pcm[(24_000 * 2)..<(40_800 * 2)]
+			print("late-delivery proof: zero samples=\(delayed.filter { $0 == 0 }.count), system drop=\(mixer.deliveryReport(for: .system).droppedSeconds), mic drop=\(mixer.deliveryReport(for: .microphone).droppedSeconds), system undelivered=\(mixer.deliveryReport(for: .system).undeliveredSeconds)")
+			try require(delayed.allSatisfy { abs($0) > 1_000 }, "350 ms of continuously captured audio became zero")
+			try require(pcm.count == 192_000, "stop flush changed two-second duration")
+			for (index, buffer) in sink.buffers.enumerated() {
+				try require(CMSampleBufferGetNumSamples(buffer) == 480, "mixed chunk size changed")
+				try require(buffer.presentationTimeStamp == CMTime(value: CMTimeValue(480_000 + index * 480), timescale: 48_000), "watermark shifted timestamps")
+			}
+			try require(mixer.deliveryReport(for: .system).droppedSeconds == 0 && mixer.deliveryReport(for: .microphone).droppedSeconds == 0, "late but in-bound packets were discarded")
+		}
+		check("timing diagnostics separate pause-normalized lag from raw queue wait") {
+			let sink = Sink(); var now = CMTime(seconds: 10.02, preferredTimescale: 48_000)
+			let mixer = AudioTrackMixer(input: sink, includesSystemAudio: true, includesMicrophone: false, microphoneGain: 1, clock: { now })
+			mixer.beginTimeline(at: CMTime(seconds: 10, preferredTimescale: 48_000))
+			let timing = AudioDeliveryTiming(callbackHostTime: CMTime(seconds: 110.04, preferredTimescale: 48_000), ingestionHostTime: CMTime(seconds: 110.44, preferredTimescale: 48_000), callbackTimelineTime: CMTime(seconds: 10.04, preferredTimescale: 48_000), ingestionTimelineTime: CMTime(seconds: 10.44, preferredTimescale: 48_000))
+			mixer.ingest(try source(seconds: 0.02, at: 10, left: 0.5, right: 0.5), from: .system, timing: timing)
+			let report = mixer.timingReport(for: .system)
+			try require(abs((report["maxQueueWaitSeconds"] as? Double ?? -1) - 0.4) < 0.0001, "queue wait used pause-normalized or PCM clock")
+			try require(abs((report["maxCallbackLagSeconds"] as? Double ?? -1) - 0.02) < 0.0001, "callback lag mixed raw and normalized domains")
+			try require(abs((report["maxIngestionLagSeconds"] as? Double ?? -1) - 0.42) < 0.0001, "ingestion lag hid scheduling delay")
+			now = CMTime(value: 481_920, timescale: 48_000); mixer.finish(atSourceTime: now)
+			try require(sink.buffers.reduce(0) { $0 + CMSampleBufferGetNumSamples($1) } == 1920, "diagnostics changed duration")
+		}
+		check("bounded diagnostics retain totals and negative clock offsets") {
+			let sink = Sink(); var now = CMTime(seconds: 10, preferredTimescale: 48_000)
+			let mixer = AudioTrackMixer(input: sink, includesSystemAudio: true, includesMicrophone: false, microphoneGain: 1, clock: { now }); mixer.beginTimeline(at: now)
+			for step in 0..<400 {
+				let at = 10 + Double(step) * 0.05; now = CMTime(seconds: at + 0.01, preferredTimescale: 48_000)
+				let callback = CMTime(seconds: at - 0.04, preferredTimescale: 48_000)
+				let timing = AudioDeliveryTiming(callbackHostTime: callback, ingestionHostTime: now, callbackTimelineTime: callback, ingestionTimelineTime: now)
+				let buffer = try source(seconds: 0.01, at: at, left: 0.25, right: 0.25)
+				let exact = copyAudioSampleBuffer(buffer, convertingTime: { _ in CMTime(value: CMTimeValue(480_000 + step * 2400), timescale: 48_000) })!
+				mixer.ingest(exact, from: .system, timing: timing)
+			}
+			let report = mixer.timingReport(for: .system)
+			try require((report["bufferCount"] as? Int) == 400, "bounded ring lost aggregate count")
+			try require((report["anomalies"] as? [[String: Any]])?.count == 100, "diagnostic storage is not bounded at 100")
+			try require((report["anomalyOverflowCount"] as? Int ?? 0) > 200, "overflow was silently lost")
+			try require((report["minCallbackLagSeconds"] as? Double ?? 0) < -0.049, "negative clock offset was clamped")
+			try require(abs((report["ptsHoleSeconds"] as? Double ?? -1) - 15.96) < 0.0001, "PTS holes lost their total")
+		}
+		check("late drop diagnostics retain exact timeline interval and emit reason") {
+			let sink = Sink(); var now = CMTime(seconds: 10.1, preferredTimescale: 48_000)
+			let mixer = AudioTrackMixer(input: sink, includesSystemAudio: true, includesMicrophone: false, microphoneGain: 1, clock: { now }); mixer.beginTimeline(at: CMTime(seconds: 10, preferredTimescale: 48_000))
+			mixer.ingest(try source(seconds: 0.1, at: 10, left: 0.5, right: 0.5), from: .system)
+			now = CMTime(seconds: 12, preferredTimescale: 48_000); mixer.tick()
+			mixer.ingest(try source(seconds: 0.2, at: 10.5, left: 0.5, right: 0.5), from: .system)
+			now = CMTime(seconds: 12.01, preferredTimescale: 48_000); mixer.tick()
+			let anomalies = mixer.timingReport(for: .system)["anomalies"] as? [[String: Any]] ?? []
+			guard let drop = anomalies.first(where: { $0["kind"] as? String == "late-drop" }) else { throw NSError(domain: "diag", code: 1, userInfo: [NSLocalizedDescriptionKey: "late PCM had no interval diagnostic"]) }
+			try require(abs((drop["startSeconds"] as? Double ?? -1) - 0.5) < 0.0001 && abs((drop["endSeconds"] as? Double ?? -1) - 0.7) < 0.0001, "late PCM interval was rebased or lost")
+			try require(drop["lastCursorAdvanceReason"] as? String == "missing-watermark", "late drop lost latest emit context")
+		}
+		check("diagnostics emit once at finish and preserve duplicate context") {
+			let sink = Sink(); var now = CMTime(seconds: 10.1, preferredTimescale: 48_000); var events: [[String: Any]] = []
+			let mixer = AudioTrackMixer(input: sink, includesSystemAudio: true, includesMicrophone: false, microphoneGain: 1, clock: { now }, timingEventHandler: { events.append($0) }); mixer.beginTimeline(at: CMTime(seconds: 10, preferredTimescale: 48_000))
+			let first = try source(seconds: 0.1, at: 10, left: 0.5, right: 0.5)
+			mixer.ingest(first, from: .system); mixer.ingest(first, from: .system)
+			now = CMTime(value: 489_600, timescale: 48_000); mixer.ingest(try source(seconds: 0.1, at: 10.1, left: 0.5, right: 0.5), from: .system)
+			try require(events.isEmpty, "diagnostics emitted on a live callback")
+			mixer.finish(atSourceTime: now); mixer.finish(atSourceTime: now)
+			try require(events.filter { $0["event"] as? String == "audio-timing" }.count == 1, "timing summary was missing or repeated")
+			try require(events.filter { $0["code"] as? String == "audio-source-late-dropped" }.count == 1, "supplied PCM discard was hidden or warning repeated")
+			let anomalies = mixer.timingReport(for: .system)["anomalies"] as? [[String: Any]] ?? []
+			try require(anomalies.contains { $0["kind"] as? String == "pts-overlap" }, "duplicate source span was mislabeled as unique missing speech")
+			try require(sink.buffers.reduce(0) { $0 + CMSampleBufferGetNumSamples($1) } == 9600, "diagnostics changed media duration")
+		}
+		check("continuous pre-anchor PCM does not create a false duplicate diagnostic") {
+			let sink = Sink(); let now = CMTime(value: 480_000, timescale: 48_000)
+			let mixer = AudioTrackMixer(input: sink, includesSystemAudio: true, includesMicrophone: false, microphoneGain: 1, clock: { now }); mixer.beginTimeline(at: now)
+			for pts in [470_400, 475_200] {
+				let buffer = try source(seconds: 0.1, at: Double(pts) / 48_000, left: 0.25, right: 0.25)
+				mixer.ingest(copyAudioSampleBuffer(buffer, convertingTime: { _ in CMTime(value: CMTimeValue(pts), timescale: 48_000) })!, from: .system)
+			}
+			let report = mixer.timingReport(for: .system)
+			try require(report["ptsOverlapSeconds"] as? Double == 0, "continuous pre-roll was diagnosed as repeated PCM")
+			try require(report["ptsHoleSeconds"] as? Double == 0, "continuous pre-roll introduced a source hole")
+			try require((report["anomalies"] as? [[String: Any]] ?? []).allSatisfy { $0["kind"] as? String != "pts-overlap" }, "pre-anchor false overlap event persisted")
+		}
+		check("late-drop reason is explicitly latest emit context rather than claimed cause") {
+			let sink = Sink(); var now = CMTime(value: 484_800, timescale: 48_000)
+			let mixer = AudioTrackMixer(input: sink, includesSystemAudio: true, includesMicrophone: false, microphoneGain: 1, clock: { now }); mixer.beginTimeline(at: CMTime(value: 480_000, timescale: 48_000))
+			mixer.ingest(try source(seconds: 0.1, at: 10, left: 0.5, right: 0.5), from: .system)
+			now = CMTime(value: 576_000, timescale: 48_000); mixer.tick()
+			mixer.ingest(try source(seconds: 0.2, at: 11, left: 0.5, right: 0.5), from: .system)
+			mixer.ingest(try source(seconds: 0.2, at: 10.5, left: 0.5, right: 0.5), from: .system)
+			now = CMTime(value: 586_080, timescale: 48_000); mixer.tick()
+			let anomalies = mixer.timingReport(for: .system)["anomalies"] as? [[String: Any]] ?? []
+			guard let drop = anomalies.first(where: { $0["kind"] as? String == "late-drop" }) else { throw NSError(domain: "diag", code: 1, userInfo: [NSLocalizedDescriptionKey: "late interval did not produce diagnostics"]) }
+			try require(drop["cursorAdvanceReason"] == nil, "latest covered emit was mislabeled as the older span's causal reason")
+			try require(drop["lastCursorAdvanceReason"] as? String == "all-sources-covered", "latest emit context was not retained truthfully")
+		}
 		if !failures.isEmpty { print("FAILED: \(failures.joined(separator: ", "))"); exit(1) }
-		print("17 capture audio regressions passed")
+		print("24 capture audio regressions passed")
 	}
 }

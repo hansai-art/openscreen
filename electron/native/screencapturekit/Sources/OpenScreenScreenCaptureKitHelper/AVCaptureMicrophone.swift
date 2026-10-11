@@ -16,14 +16,14 @@ final class AVCaptureMicrophone: NSObject, AVCaptureAudioDataOutputSampleBufferD
 	private let startup = AudioSourceStartupGate()
 	private let deviceID: String?
 	private let deviceName: String?
-	private let onBuffer: (CMSampleBuffer) -> Void
+	private let onBuffer: (CMSampleBuffer, CMTime) -> Void
 	private let onFailure: (String) -> Void
 	private var output: AVCaptureAudioDataOutput?
 	private var runtimeErrorObserver: NSObjectProtocol?
 	// controlQueue only.
 	private var stopped = false
 
-	init(deviceID: String?, deviceName: String?, onBuffer: @escaping (CMSampleBuffer) -> Void,
+	init(deviceID: String?, deviceName: String?, onBuffer: @escaping (CMSampleBuffer, CMTime) -> Void,
 		onFailure: @escaping (String) -> Void) {
 		self.deviceID = deviceID
 		self.deviceName = deviceName
@@ -123,6 +123,7 @@ final class AVCaptureMicrophone: NSObject, AVCaptureAudioDataOutputSampleBufferD
 
 	func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
 		from connection: AVCaptureConnection) {
+		let callbackHostTime = CMClockGetTime(CMClockGetHostTimeClock())
 		guard CMSampleBufferDataIsReady(sampleBuffer), CMSampleBufferGetNumSamples(sampleBuffer) > 0,
 			let format = CMSampleBufferGetFormatDescription(sampleBuffer),
 			let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(format)?.pointee,
@@ -133,6 +134,6 @@ final class AVCaptureMicrophone: NSObject, AVCaptureAudioDataOutputSampleBufferD
 			})
 		else { return }
 		startup.sampleReady()
-		onBuffer(buffer)
+		onBuffer(buffer, callbackHostTime)
 	}
 }

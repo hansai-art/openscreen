@@ -146,6 +146,10 @@ export function readNativeMacStopOutcome(
 	const systemAudioLost = events.some(
 		(event) => event.event === "warning" && event.code === "system-audio-unavailable",
 	);
+	const audioTimingWarning = lastWhere(
+		events,
+		(event) => event.event === "warning" && event.code === "audio-source-late-dropped",
+	);
 	const exited = exit !== null;
 
 	// A finalized file outranks anything said before it: this is the take the
@@ -169,6 +173,13 @@ export function readNativeMacStopOutcome(
 		}
 		if (systemAudioLost) {
 			warnings.push(SYSTEM_AUDIO_LOST_WARNING);
+		}
+		if (audioTimingWarning) {
+			warnings.push(
+				typeof audioTimingWarning.message === "string" && audioTimingWarning.message.trim()
+					? audioTimingWarning.message.trim()
+					: "The recording may contain audio gaps due to delayed or repeated audio buffers.",
+			);
 		}
 		return warnings.length > 0
 			? { ok: true, screenVideoPath, warning: warnings.join(" ") }
