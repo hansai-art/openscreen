@@ -31,6 +31,23 @@ private func source(seconds: Double, at: Double, left: Float, right: Float) thro
 	}
 }
 
+private func capturedPCM(_ sink: Sink) -> [Int16] {
+	var result: [Int16] = []
+	for buffer in sink.buffers {
+		guard let block = CMSampleBufferGetDataBuffer(buffer) else { continue }
+		var chunk = [Int16](repeating: 0, count: CMSampleBufferGetNumSamples(buffer) * 2)
+		_ = chunk.withUnsafeMutableBytes { CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: $0.count, destination: $0.baseAddress!) }
+		result.append(contentsOf: chunk)
+	}
+	return result
+}
+
+private func exactSource(frames: Int, atFrame: Int64, left: Float, right: Float) throws -> CMSampleBuffer {
+	let buffer = try source(seconds: Double(frames) / 48_000, at: Double(atFrame) / 48_000, left: left, right: right)
+	try require(CMSampleBufferGetNumSamples(buffer) == frames, "fixture frame count")
+	return copyAudioSampleBuffer(buffer, convertingTime: { _ in CMTime(value: atFrame, timescale: 48_000) })!
+}
+
 @main struct CaptureAudioRegression {
 	static func main() async {
 		var failures: [String] = []
@@ -269,7 +286,75 @@ private func source(seconds: Double, at: Double, left: Float, right: Float) thro
 			try require(drop["cursorAdvanceReason"] == nil, "latest covered emit was mislabeled as the older span's causal reason")
 			try require(drop["lastCursorAdvanceReason"] as? String == "all-sources-covered", "latest emit context was not retained truthfully")
 		}
+		check("pre-anchor speech retains its first705ms and applies microphone gain once") {
+			let sink = Sink(); let now = CMTime(value: 514_080, timescale: 48_000)
+			let mixer = AudioTrackMixer(input: sink, includesSystemAudio: false, includesMicrophone: true, microphoneGain: 1.4, clock: { now })
+			mixer.ingest(try exactSource(frames: 33_840, atFrame: 480_000, left: 0.25, right: 0.25), from: .microphone)
+			mixer.beginTimeline(at: CMTime(value: 480_000, timescale: 48_000)); mixer.finish(atSourceTime: now)
+			let pcm = capturedPCM(sink)
+			try require(pcm.count == 68_160, "pre-roll shifted or extended the710ms take")
+			try require(pcm.prefix(67_680).allSatisfy { abs(Int($0) - 11_468) <= 1 }, "first705ms lost or microphone gain applied twice")
+			try require(pcm.suffix(480).allSatisfy { $0 == 0 }, "pre-roll fabricated sound beyond captured PTS")
+			try require(sink.buffers.first?.presentationTimeStamp == CMTime(value: 480_000, timescale: 48_000), "pre-roll moved the video origin")
+		}
+		check("pre-anchor negative PCM trims at video zero without losing positive speech") {
+			let sink = Sink(); let now = CMTime(value: 489_600, timescale: 48_000)
+			let mixer = AudioTrackMixer(input: sink, includesSystemAudio: true, includesMicrophone: false, microphoneGain: 1, clock: { now })
+			mixer.ingest(try exactSource(frames: 9600, atFrame: 475_200, left: 0.5, right: 0.5), from: .system)
+			mixer.beginTimeline(at: CMTime(value: 480_000, timescale: 48_000)); mixer.finish(atSourceTime: now)
+			let pcm = capturedPCM(sink)
+			try require(pcm.prefix(9600).allSatisfy { abs($0) > 1000 }, "positive half of pre-anchor PCM was discarded")
+			try require(pcm.count == 19_200 && pcm.suffix(9600).allSatisfy { $0 == 0 }, "negative PCM rebased or tail length changed")
+			try require(abs(mixer.deliveryReport(for: .system).trimmedSeconds - 0.1) < 0.00001 && mixer.deliveryReport(for: .system).droppedSeconds == 0, "negative PCM was mislabeled as late loss")
+		}
+		check("both pre-roll sources register before watermark drains delayed startup") {
+			let sink = Sink(); let now = CMTime(value: 547_200, timescale: 48_000)
+			let mixer = AudioTrackMixer(input: sink, includesSystemAudio: true, includesMicrophone: true, microphoneGain: 1, clock: { now })
+			for i in 0..<14 {
+				let pts = Int64(480_000 + i * 4800)
+				mixer.ingest(try exactSource(frames: 4800, atFrame: pts, left: 0.5, right: 0), from: .system)
+				mixer.ingest(try exactSource(frames: 4800, atFrame: pts, left: 0, right: 0.25), from: .microphone)
+			}
+			mixer.beginTimeline(at: CMTime(value: 480_000, timescale: 48_000)); mixer.finish(atSourceTime: now)
+			let pcm = capturedPCM(sink)
+			try require(pcm.count == 134_400 && pcm.allSatisfy { abs($0) > 1000 }, "replay drained too early and replaced retained PCM with zeros")
+			try require(mixer.deliveryReport(for: .system).droppedSeconds == 0 && mixer.deliveryReport(for: .microphone).droppedSeconds == 0, "batch replay late-dropped captured speech")
+		}
+		check("pre-roll replay preserves original callback and ingestion timing") {
+			let sink = Sink(); let now = CMTime(value: 547_200, timescale: 48_000)
+			let mixer = AudioTrackMixer(input: sink, includesSystemAudio: true, includesMicrophone: false, microphoneGain: 1, clock: { now })
+			let timing = AudioDeliveryTiming(callbackHostTime: CMTime(value: 5_281_920, timescale: 48_000), ingestionHostTime: CMTime(value: 5_282_400, timescale: 48_000), callbackTimelineTime: CMTime(value: 481_920, timescale: 48_000), ingestionTimelineTime: CMTime(value: 482_400, timescale: 48_000))
+			mixer.ingest(try exactSource(frames: 960, atFrame: 480_000, left: 0.5, right: 0.5), from: .system, timing: timing)
+			mixer.beginTimeline(at: CMTime(value: 480_000, timescale: 48_000))
+			let report = mixer.timingReport(for: .system)
+			try require(abs((report["maxQueueWaitSeconds"] as? Double ?? -1) - 0.01) < 0.00001, "replay wait was forged into callback queue wait")
+			try require(abs((report["maxIngestionLagSeconds"] as? Double ?? -1) - 0.03) < 0.00001, "replay time was forged into PCM ingestion lag")
+			try require(abs((mixer.preRollReport(for: .system)["maxReplayTimelineWaitSeconds"] as? Double ?? -1) - 1.35) < 0.00001, "startup replay wait was hidden instead of reported separately")
+		}
+		check("pre-roll byte and packet caps evict oldest PCM with explicit counters") {
+			let sink = Sink(); let now = CMTime(value: 624_000, timescale: 48_000)
+			let mixer = AudioTrackMixer(input: sink, includesSystemAudio: true, includesMicrophone: false, microphoneGain: 1, clock: { now })
+			mixer.ingest(try exactSource(frames: 144_000, atFrame: 480_000, left: 0.5, right: 0.5), from: .system)
+			let report = mixer.preRollReport(for: .system)
+			try require(report["pendingFrames"] as? Int == 96_000 && report["evictedFrames"] as? Int == 48_000 && (report["peakPendingBytes"] as? Int ?? Int.max) <= 768_000, "two-second owned PCM limit was not enforced")
+			mixer.beginTimeline(at: CMTime(value: 528_000, timescale: 48_000)); mixer.finish(atSourceTime: now)
+			try require(capturedPCM(sink).count == 192_000 && capturedPCM(sink).allSatisfy { abs($0) > 1000 }, "retained tail was rebased or corrupted")
+			let tiny = AudioTrackMixer(input: Sink(), includesSystemAudio: true, includesMicrophone: false, microphoneGain: 1, clock: { now })
+			for i in 0..<600 { tiny.ingest(try exactSource(frames: 1, atFrame: Int64(480_000 + i), left: 0.5, right: 0.5), from: .system) }
+			let capped = tiny.preRollReport(for: .system)
+			try require(capped["pendingPackets"] as? Int == 512 && capped["evictedPackets"] as? Int == 88 && capped["evictedFrames"] as? Int == 88, "metadata packet cap did not report discarded spans")
+		}
+		check("cancel before first video releases pre-roll and rejects later queued audio") {
+			let sink = Sink(); let now = CMTime(value: 489_600, timescale: 48_000)
+			let mixer = AudioTrackMixer(input: sink, includesSystemAudio: true, includesMicrophone: false, microphoneGain: 1, clock: { now })
+			mixer.ingest(try exactSource(frames: 4800, atFrame: 480_000, left: 0.5, right: 0.5), from: .system)
+			try require(mixer.preRollReport(for: .system)["pendingFrames"] as? Int == 4800, "cancel fixture did not retain real PCM")
+			mixer.cancelPreRoll()
+			mixer.ingest(try exactSource(frames: 4800, atFrame: 484_800, left: 0.5, right: 0.5), from: .system)
+			mixer.beginTimeline(at: CMTime(value: 480_000, timescale: 48_000)); mixer.finish(atSourceTime: now)
+			try require(mixer.preRollReport(for: .system)["pendingFrames"] as? Int == 0 && sink.buffers.isEmpty, "cancel leaked PCM or allowed an empty ghost recording")
+		}
 		if !failures.isEmpty { print("FAILED: \(failures.joined(separator: ", "))"); exit(1) }
-		print("24 capture audio regressions passed")
+		print("30 capture audio regressions passed")
 	}
 }

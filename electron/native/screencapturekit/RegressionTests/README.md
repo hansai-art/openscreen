@@ -20,3 +20,10 @@ context is explicitly distinguished from its cause. Capture
 diag metadata does not store PCM. The one-second watermark and frozen stop endpoint remain
 unchanged; a warning reports possible audio gaps rather than equating discarded spans with
 lost speech.
+
+Six additional startup cases bring the harness to30 regressions: preserve705 ms of
+pre-anchor speech with gain applied once; trim negative PTS without rebasing; register
+both cached sources before watermark drain; retain original callback/ingestion stamps;
+bound each owned Float pre-roll to96,000 stereo frames and512 packets with eviction
+counters; and release/reject startup PCM on cancellation before the first video frame.
+The hardware producers and one-second live watermark are unchanged.

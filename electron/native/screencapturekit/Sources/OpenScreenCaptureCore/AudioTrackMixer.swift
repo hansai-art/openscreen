@@ -118,6 +118,8 @@ public final class AudioTrackMixer {
 	private var maxDrainSeconds = 0.0
 	private var maxDecodeSeconds = 0.0
 	private var maxAppendSeconds = 0.0
+	private var preRoll = [AudioPreRoll](repeating: AudioPreRoll(), count: Source.allCases.count)
+	private var preRollClosed = false
 
 	public init(
 		input: MixedAudioSink,
@@ -145,7 +147,7 @@ public final class AudioTrackMixer {
 	/// frame zero rather than moving the origin, and audio that arrives long after it lands at
 	/// the offset it belongs at with real silence in front of it.
 	public func beginTimeline(at sessionStart: CMTime) {
-		guard anchor == nil, sessionStart.isValid, sessionStart.isNumeric else {
+		guard anchor == nil, !preRollClosed, sessionStart.isValid, sessionStart.isNumeric else {
 			return
 		}
 
@@ -154,10 +156,19 @@ public final class AudioTrackMixer {
 			timescale: CMTimeScale(MixFormat.sampleRate),
 			method: .roundHalfAwayFromZero
 		)
+		// Populate both sources before advancing the cursor. Draining after each replayed
+		// packet would mistake the rest of this already captured batch for missing audio.
+		let replayTime = clock()
+		for source in Source.allCases where includes(source) {
+			for packet in preRoll[source.rawValue].take(at: replayTime) {
+				registerDecoded(packet.frames, at: packet.presentationTime, from: source, timing: packet.timing)
+			}
+		}
+		drain(upTo: clock(), holdback: Int64(MixFormat.missingDataWatermarkFrames))
 	}
 
 	public func ingest(_ sampleBuffer: CMSampleBuffer, from source: Source, timing: AudioDeliveryTiming? = nil) {
-		guard includes(source), let anchor else {
+		guard includes(source), anchor != nil || !preRollClosed else {
 			return
 		}
 		let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
@@ -175,7 +186,17 @@ public final class AudioTrackMixer {
 		}
 
 		maxDecodeSeconds = max(maxDecodeSeconds, diagnosticHostSeconds() - decodeStart)
+		guard anchor != nil else {
+			preRoll[source.rawValue].append(frames: frames, presentationTime: presentationTime, timing: timing)
+			return
+		}
 		let now = clock()
+		registerDecoded(frames, at: presentationTime, from: source, timing: timing)
+		drain(upTo: now, holdback: Int64(MixFormat.missingDataWatermarkFrames))
+	}
+
+	private func registerDecoded(_ frames: [Float], at presentationTime: CMTime, from source: Source, timing: AudioDeliveryTiming?) {
+		guard let anchor else { return }
 		let startFrame = frameIndex(of: presentationTime, from: anchor)
 		let frameCount = Int64(frames.count / MixFormat.channelCount)
 		timingDiagnostics[source.rawValue].recordBuffer(startFrame: startFrame, endFrame: startFrame + frameCount,
@@ -183,7 +204,6 @@ public final class AudioTrackMixer {
 			anchor: anchor, timing: timing)
 		noteDelivery(source, from: startFrame, frameCount: frameCount)
 		sources[source.rawValue].ingest(frames, atFrame: startFrame)
-		drain(upTo: now, holdback: Int64(MixFormat.missingDataWatermarkFrames))
 	}
 
 	/// Advances the cursor to wherever the clock now stands, emitting silence for anything no
@@ -209,6 +229,7 @@ public final class AudioTrackMixer {
 			emitTimelineSummary()
 		}
 		flushPending(force: true)
+		cancelPreRoll()
 		emitTimingSummaryOnce()
 	}
 
@@ -323,7 +344,18 @@ public final class AudioTrackMixer {
 		public let trimmedSeconds: Double
 	}
 
-	public func timingReport(for source: Source) -> [String: Any] { timingDiagnostics[source.rawValue].report() }
+	public func preRollReport(for source: Source) -> [String: Any] { preRoll[source.rawValue].report() }
+	/// Called after producer gates close, including cancellation before the first frame.
+	public func cancelPreRoll() {
+		preRollClosed = true
+		for index in preRoll.indices { preRoll[index].cancel() }
+	}
+
+	public func timingReport(for source: Source) -> [String: Any] {
+		var report = timingDiagnostics[source.rawValue].report()
+		report["preRoll"] = preRollReport(for: source)
+		return report
+	}
 
 	private func diagnosticHostSeconds() -> Double { CMTimeGetSeconds(CMClockGetTime(CMClockGetHostTimeClock())) }
 

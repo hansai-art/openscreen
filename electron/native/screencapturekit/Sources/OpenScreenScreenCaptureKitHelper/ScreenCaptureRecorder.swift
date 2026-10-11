@@ -304,6 +304,9 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 			])
 		}
 		stopSystemAudioTap()
+		// Both audio producers now reject queued callbacks. The unknown-writer path does
+		// not call mixer.finish, so explicitly release startup PCM even without a first frame.
+		audioQueue.sync { audioMixer?.cancelPreRoll() }
 
 		await finishWriter()
 	}
