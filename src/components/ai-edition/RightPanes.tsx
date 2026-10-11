@@ -946,13 +946,18 @@ export function TranscriptPane({
 		: ts(insertionsEnabled() ? "transcript.editingHintDev" : "transcript.editingHint");
 	// An in-flight run keeps its provider snapshot even if the user changes the
 	// setting for the next run. Prefer that known backend over the current setting.
+	// Before a backend is reported, that next-run setting cannot describe this run.
 	const runningBackend = busyView?.status === "running" ? busyView.backend : undefined;
+	const hasPendingTranscription =
+		isTranscribing || busyView?.status === "running" || busyView?.status === "queued";
 	const activeProvider =
 		runningBackend === "gmi-gemini"
 			? "gmi"
 			: runningBackend?.startsWith("whispercpp-")
 				? "whisper"
-				: transcriptionSettings?.provider;
+				: hasPendingTranscription
+					? undefined
+					: transcriptionSettings?.provider;
 	const privacyHint =
 		activeProvider === "gmi"
 			? te("transcriptionSettings.consent")
