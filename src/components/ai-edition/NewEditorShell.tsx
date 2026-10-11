@@ -1662,7 +1662,18 @@ export function NewEditorShell() {
 							/>
 						</>
 					) : mode === "media" ? (
-						<MediaStage onAddToTimeline={handleDropAsset} />
+						<MediaStage
+							onAddToTimeline={handleDropAsset}
+							onAddAudioToTimeline={async (assetId) => {
+								const trackId = await tl.addAudioTrack(assetId);
+								if (!trackId) throw new Error("Could not add the audio track.");
+							}}
+							onAudioTrackImported={() => {
+								const trackId = useProjectStore.getState().selectedAudioTrackId;
+								if (trackId) tl.selectAudioTrack(trackId);
+							}}
+							onShowTimeline={() => setMode("edit")}
+						/>
 					) : (
 						<RecStage
 							onStartRecording={() => void handleNewRecording()}

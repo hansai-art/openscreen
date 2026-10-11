@@ -953,17 +953,21 @@ export function TranscriptPane({
 	const activeProvider =
 		runningBackend === "gmi-gemini"
 			? "gmi"
-			: runningBackend?.startsWith("whispercpp-")
-				? "whisper"
-				: hasPendingTranscription
-					? undefined
-					: transcriptionSettings?.provider;
+			: runningBackend === "agy-gemini"
+				? "agy"
+				: runningBackend?.startsWith("whispercpp-")
+					? "whisper"
+					: hasPendingTranscription
+						? undefined
+						: transcriptionSettings?.provider;
 	const privacyHint =
 		activeProvider === "gmi"
 			? te("transcriptionSettings.consent")
-			: activeProvider === "whisper"
-				? ts("transcript.whisperHint")
-				: te("transcriptionSettings.description");
+			: activeProvider === "agy"
+				? te("transcriptionSettings.agyConsent")
+				: activeProvider === "whisper"
+					? ts("transcript.whisperHint")
+					: te("transcriptionSettings.description");
 
 	if (captionsOpen) return <CaptionsPane onClose={() => setCaptionsOpen(false)} />;
 

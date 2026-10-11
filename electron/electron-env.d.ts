@@ -24,6 +24,13 @@ declare namespace NodeJS {
 // Used in Renderer process, expose in `preload.ts`
 interface Window {
 	electronAPI: {
+		exportSourceAudio: (
+			request: import("./media/sourceExportContract").SourceAudioExportRequest,
+		) => Promise<import("./media/sourceExportContract").SourceExportResult>;
+		cancelSourceAudioExport: () => Promise<void>;
+		exportSrtFile: (
+			request: import("./media/sourceExportContract").SourceSrtExportRequest,
+		) => Promise<import("./media/sourceExportContract").SourceExportResult>;
 		invokeNativeBridge: <TData = unknown>(
 			request: import("../src/native/contracts").NativeBridgeRequest,
 		) => Promise<import("../src/native/contracts").NativeBridgeResponse<TData>>;

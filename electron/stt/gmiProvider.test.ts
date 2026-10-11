@@ -87,6 +87,18 @@ describe("GMI timed transcription", () => {
 		expect((failure as Error).message).toMatch(/timeout/i);
 	});
 
+	it("preserves the source Chinese script unless conversion is requested", async () => {
+		const endpoint = await server((_req, res) =>
+			reply(res, [{ startSec: 0.25, endSec: 1.5, text: "这个软件" }]),
+		);
+		const result = await new GmiTranscriptionProvider({ endpoint }).transcribe({
+			samples: new Float32Array(32000),
+			apiKey: "test-secret",
+			language: "zh",
+		});
+		expect(result.segments[0].text).toBe("这个软件");
+	});
+
 	it("sends audio only in the request body and returns Taiwan Traditional timed phrases", async () => {
 		let body = "";
 		let authorization = "";
@@ -109,6 +121,7 @@ describe("GMI timed transcription", () => {
 			samples: new Float32Array(32_000).fill(0.25),
 			apiKey: "test-secret",
 			language: "zh",
+			traditionalChinese: true,
 		});
 		expect(result.segments).toEqual([
 			{ startSec: 0.25, endSec: 1.5, text: "這個軟體支援 Gemini 模型。" },

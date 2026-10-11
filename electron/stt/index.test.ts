@@ -23,6 +23,12 @@ const fakeWhisperServer = {
 	shutdown: vi.fn(),
 };
 
+const fakeAgyTranscribe = vi.fn();
+vi.mock("./agyProvider", () => ({
+	AgyTranscriptionProvider: class {
+		transcribe = fakeAgyTranscribe;
+	},
+}));
 const fakeGmiTranscribe = vi.fn();
 vi.mock("./gmiProvider", () => ({
 	GmiTranscriptionProvider: class {
@@ -65,7 +71,97 @@ describe("SttManager", () => {
 	let infoSpy: MockInstance<typeof console.info>;
 	let warnSpy: MockInstance<typeof console.warn>;
 
+	it("retains every phrase when Chinese chunks mix sentence-only and word timing", async () => {
+		fakeWhisperServer.transcribe
+			.mockResolvedValueOnce({
+				segments: [{ text: "这是完整中文句子", startSec: 0, endSec: 7 }],
+				wordSegments: [{ word: "这是完整中文句子", startSec: 0, endSec: 4 }],
+				detectedLanguage: "zh",
+				backend: "whispercpp-metal",
+			})
+			.mockResolvedValueOnce({
+				segments: [{ text: "第二句", startSec: 0, endSec: 2 }],
+				wordSegments: [
+					{ word: "第二", startSec: 0, endSec: 1 },
+					{ word: "句", startSec: 1, endSec: 2 },
+				],
+				detectedLanguage: "zh",
+				backend: "whispercpp-metal",
+			});
+		const manager = new SttManager({
+			getProviderConfig: () => ({
+				provider: "whisper",
+				cloudConsent: false,
+				traditionalChinese: true,
+			}),
+		});
+		const result = await manager.transcribe({
+			samples: new Float32Array(100 * 16000),
+			language: "zh",
+		});
+		expect(fakeWhisperServer.transcribe).toHaveBeenCalledTimes(2);
+		expect(result.wordSegments).toEqual([]);
+		expect(result.segments).toEqual([
+			{ text: "這是完整中文句子", startSec: 0, endSec: 7 },
+			{ text: "第二句", startSec: 90, endSec: 92 },
+		]);
+	});
+
+	it("requires separate AGY consent before extraction or upload", async () => {
+		const manager = new SttManager({
+			getProviderConfig: () => ({ provider: "agy", cloudConsent: true, apiKey: "private-token" }),
+		});
+		await expect(manager.transcribe({ samples: new Float32Array(16000) })).rejects.toThrow(
+			/separate explicit consent/,
+		);
+		expect(fakeAgyTranscribe).not.toHaveBeenCalled();
+		expect(fakeWhisperServer.start).not.toHaveBeenCalled();
+	});
+	it("routes AGY phrase results without initializing Whisper or using the GMI key", async () => {
+		fakeAgyTranscribe.mockResolvedValue({
+			segments: [{ text: "繁體字幕", startSec: 0, endSec: 0.9 }],
+			wordSegments: [],
+			detectedLanguage: "zh",
+			backend: "agy-gemini",
+			timing: { elapsedSec: 2, audioSec: 1, rtf: 2 },
+		});
+		const manager = new SttManager({
+			getProviderConfig: () => ({
+				provider: "agy",
+				cloudConsent: true,
+				agyCloudConsent: true,
+				apiKey: "private-token",
+			}),
+		});
+		const result = await manager.transcribe({ samples: new Float32Array(16000) });
+		expect(result.backend).toBe("agy-gemini");
+		expect(result.wordSegments).toEqual([]);
+		expect(result.timing?.elapsedSec).toBe(2);
+		expect(fakeWhisperServer.start).not.toHaveBeenCalled();
+		expect(fakeGmiTranscribe).not.toHaveBeenCalled();
+		expect(fakeAgyTranscribe.mock.calls[0][0]).not.toHaveProperty("apiKey");
+	});
+	it("cancels an AGY request in flight", async () => {
+		fakeAgyTranscribe.mockImplementation(
+			({ signal }: { signal: AbortSignal }) =>
+				new Promise((_resolve, reject) =>
+					signal.addEventListener("abort", () => reject(new DOMException("cancel", "AbortError")), {
+						once: true,
+					}),
+				),
+		);
+		const manager = new SttManager({
+			getProviderConfig: () => ({ provider: "agy", cloudConsent: false, agyCloudConsent: true }),
+		});
+		const request = manager.transcribe({ samples: new Float32Array(16000) });
+		const rejected = expect(request).rejects.toMatchObject({ name: "AbortError" });
+		await vi.waitFor(() => expect(fakeAgyTranscribe).toHaveBeenCalled());
+		manager.cancel();
+		await rejected;
+	});
+
 	beforeEach(() => {
+		fakeAgyTranscribe.mockReset();
 		fakeGmiTranscribe.mockReset();
 		fakeGmiTranscribe.mockResolvedValue({
 			segments: [{ text: "繁體字幕", startSec: 0.25, endSec: 0.75 }],

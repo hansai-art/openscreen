@@ -127,6 +127,10 @@
       "to": "THIRD-PARTY-NOTICES.md"
     },
     {
+      "from": "build-licenses/THIRD-PARTY-LICENSES.txt",
+      "to": "THIRD-PARTY-LICENSES.txt"
+    },
+    {
       "from": "LICENSE",
       "to": "LICENSE"
     },

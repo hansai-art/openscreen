@@ -24,6 +24,74 @@ afterEach(() => {
 	localStorage.clear();
 });
 describe("TranscriptionSettings", () => {
+	it("offers Traditional Chinese as an explicit saved preference", async () => {
+		render(
+			<I18nProvider>
+				<TranscriptionSettings open />
+			</I18nProvider>,
+		);
+		await screen.findByRole("combobox", { name: "轉錄引擎" });
+		const checkbox = screen.getByRole("checkbox", { name: "中文輸出繁體（臺灣）" });
+		expect(checkbox).not.toBeChecked();
+		fireEvent.click(checkbox);
+		fireEvent.click(screen.getByRole("button", { name: "儲存轉錄設定" }));
+		await waitFor(() =>
+			expect(updateSettings).toHaveBeenCalledWith({
+				provider: "whisper",
+				cloudConsent: false,
+				autoTranscribe: true,
+				traditionalChinese: true,
+			}),
+		);
+	});
+
+	it("disables AGY until a local CLI is found", async () => {
+		render(
+			<I18nProvider>
+				<TranscriptionSettings open />
+			</I18nProvider>,
+		);
+		await screen.findByRole("combobox", { name: "轉錄引擎" });
+		expect(screen.getByRole("option", { name: "AGY Gemini（雲端）" })).toBeDisabled();
+	});
+	it("keeps AGY upload consent separate from an existing GMI approval", async () => {
+		getSettings.mockResolvedValue({
+			provider: "gmi",
+			cloudConsent: true,
+			hasApiKey: true,
+			agyAvailable: true,
+			autoTranscribe: true,
+		});
+		updateSettings.mockResolvedValue({
+			provider: "agy",
+			cloudConsent: false,
+			agyCloudConsent: true,
+			hasApiKey: true,
+			agyAvailable: true,
+			autoTranscribe: true,
+		});
+		render(
+			<I18nProvider>
+				<TranscriptionSettings open />
+			</I18nProvider>,
+		);
+		await screen.findByText("金鑰已設定");
+		fireEvent.change(screen.getByRole("combobox"), { target: { value: "agy" } });
+		const consent = screen.getByRole("checkbox", { name: /^允許將音訊透過 AGY/ });
+		expect(consent).not.toBeChecked();
+		expect(screen.getByRole("button", { name: "儲存轉錄設定" })).toBeDisabled();
+		fireEvent.click(consent);
+		fireEvent.click(screen.getByRole("button", { name: "儲存轉錄設定" }));
+		await waitFor(() =>
+			expect(updateSettings).toHaveBeenCalledWith({
+				provider: "agy",
+				cloudConsent: false,
+				agyCloudConsent: true,
+				autoTranscribe: true,
+			}),
+		);
+	});
+
 	it("requires a credential and explicit audio upload consent before saving GMI", async () => {
 		render(
 			<I18nProvider>

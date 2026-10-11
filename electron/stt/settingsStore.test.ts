@@ -41,6 +41,8 @@ describe("TranscriptionSettingsStore", () => {
 		expect(store.getSnapshot()).toEqual({
 			provider: "whisper",
 			cloudConsent: false,
+			agyCloudConsent: false,
+			traditionalChinese: false,
 			autoTranscribe: true,
 			hasApiKey: false,
 		});
@@ -55,6 +57,8 @@ describe("TranscriptionSettingsStore", () => {
 		expect(restored.getSnapshot()).toEqual({
 			provider: "gmi",
 			cloudConsent: true,
+			agyCloudConsent: false,
+			traditionalChinese: false,
 			autoTranscribe: true,
 			hasApiKey: true,
 		});
@@ -83,6 +87,8 @@ describe("TranscriptionSettingsStore", () => {
 		expect(store.update({ autoTranscribe: false })).toEqual({
 			provider: "gmi",
 			cloudConsent: true,
+			agyCloudConsent: false,
+			traditionalChinese: false,
 			autoTranscribe: false,
 			hasApiKey: true,
 		});
@@ -96,6 +102,8 @@ describe("TranscriptionSettingsStore", () => {
 		expect(store.update({ provider: "gmi", autoTranscribe: false })).toEqual({
 			provider: "gmi",
 			cloudConsent: false,
+			agyCloudConsent: false,
+			traditionalChinese: false,
 			autoTranscribe: false,
 			hasApiKey: false,
 		});
@@ -173,6 +181,46 @@ describe("TranscriptionSettingsStore", () => {
 		expect(store.getSnapshot().hasApiKey).toBe(true);
 		expect(store.getProviderConfig().apiKey).toBe("environment-token");
 	});
+	it("preserves Chinese script by default and persists an explicit Traditional preference", () => {
+		const dir = folder();
+		const store = new TranscriptionSettingsStore(dir, cipher, {});
+		expect(store.getSnapshot().traditionalChinese).toBe(false);
+		store.update({ traditionalChinese: true, autoTranscribe: false });
+		expect(
+			new TranscriptionSettingsStore(dir, cipher, {}).getProviderConfig().traditionalChinese,
+		).toBe(true);
+		expect(() => store.update({ traditionalChinese: "yes" } as never)).toThrow(/script preference/);
+	});
+
+	it("requires AGY consent separately from GMI and keeps the stored GMI key opaque", () => {
+		const dir = folder();
+		writeFileSync(
+			path.join(dir, "stt-settings.json"),
+			JSON.stringify({ provider: "gmi", cloudConsent: true, autoTranscribe: false }),
+		);
+		writeFileSync(path.join(dir, "stt-credential.enc"), cipher.encryptString("private-token"));
+		const decryptString = vi.fn(cipher.decryptString);
+		const store = new TranscriptionSettingsStore(dir, { ...cipher, decryptString }, {});
+		store.update({ provider: "agy" });
+		expect(store.getSnapshot().agyCloudConsent).toBe(false);
+		expect(() => store.update({ autoTranscribe: true })).toThrow(/AGY.*consent/);
+		store.update({ agyCloudConsent: true, autoTranscribe: true });
+		expect(store.getProviderConfig()).toEqual({
+			provider: "agy",
+			cloudConsent: true,
+			agyCloudConsent: true,
+			traditionalChinese: false,
+			apiKey: undefined,
+		});
+		expect(decryptString).not.toHaveBeenCalled();
+		expect(
+			new TranscriptionSettingsStore(dir, { ...cipher, decryptString }, {}).getSnapshot()
+				.agyCloudConsent,
+		).toBe(true);
+		expect(decryptString).not.toHaveBeenCalled();
+		expect(store.getSnapshot().hasApiKey).toBe(true);
+	});
+
 	it("rejects malformed IPC values without altering the saved configuration", () => {
 		const store = new TranscriptionSettingsStore(folder(), cipher, {});
 		expect(() => store.update({ provider: "other" } as never)).toThrow();
@@ -182,6 +230,8 @@ describe("TranscriptionSettingsStore", () => {
 		expect(store.getSnapshot()).toEqual({
 			provider: "whisper",
 			cloudConsent: false,
+			agyCloudConsent: false,
+			traditionalChinese: false,
 			autoTranscribe: true,
 			hasApiKey: false,
 		});

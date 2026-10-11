@@ -1,3 +1,5 @@
+import type { TranscriptionProvider } from "./settingsContract";
+
 /**
  * Shared types for the main-process speech-to-text pipeline. The renderer talks to
  * the main process through these types; the main-process STT modules talk to
@@ -37,11 +39,14 @@ export type SttBackend =
 	| "whispercpp-vulkan"
 	| "whispercpp-cuda"
 	| "whispercpp-cpu"
-	| "gmi-gemini";
+	| "gmi-gemini"
+	| "agy-gemini";
 
 /** Main-process-only provider snapshot. Never return this type over a settings IPC getter. */
 export interface SttProviderRuntimeConfig {
-	provider: "whisper" | "gmi";
+	provider: TranscriptionProvider;
+	agyCloudConsent?: boolean;
+	traditionalChinese?: boolean;
 	/** Required before any audio is uploaded to GMI Cloud. */
 	cloudConsent: boolean;
 	/** Read from OS-encrypted storage or GMI_API_KEY; never persisted in a project. */

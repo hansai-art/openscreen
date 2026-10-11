@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useScopedT } from "@/contexts/I18nContext";
 import { TRANSCRIPTION_SETTINGS_CHANGED_EVENT } from "@/hooks/useTranscriptionProvider";
 import type {
+	TranscriptionProvider,
 	TranscriptionSettingsSnapshot,
 	TranscriptionSettingsUpdate,
 } from "../../../electron/stt/settingsContract";
@@ -10,8 +11,10 @@ import styles from "./NewEditorShell.module.css";
 export function TranscriptionSettings({ open }: { open: boolean }) {
 	const te = useScopedT("editor");
 	const [snapshot, setSnapshot] = useState<TranscriptionSettingsSnapshot | null>(null);
-	const [provider, setProvider] = useState<"whisper" | "gmi">("whisper");
+	const [provider, setProvider] = useState<TranscriptionProvider>("whisper");
 	const [consent, setConsent] = useState(false);
+	const [agyConsent, setAgyConsent] = useState(false);
+	const [traditionalChinese, setTraditionalChinese] = useState(false);
 	const [autoTranscribe, setAutoTranscribe] = useState(true);
 	const [apiKey, setApiKey] = useState("");
 	const [busy, setBusy] = useState(false);
@@ -29,6 +32,8 @@ export function TranscriptionSettings({ open }: { open: boolean }) {
 				setSnapshot(next);
 				setProvider(next.provider);
 				setConsent(next.cloudConsent);
+				setAgyConsent(next.agyCloudConsent === true);
+				setTraditionalChinese(next.traditionalChinese === true);
 				setAutoTranscribe(next.autoTranscribe !== false);
 				setError(null);
 			},
@@ -49,6 +54,8 @@ export function TranscriptionSettings({ open }: { open: boolean }) {
 			setSnapshot(next);
 			setProvider(next.provider);
 			setConsent(next.cloudConsent);
+			setAgyConsent(next.agyCloudConsent === true);
+			setTraditionalChinese(next.traditionalChinese === true);
 			setAutoTranscribe(next.autoTranscribe !== false);
 			setApiKey("");
 			setSaved(true);
@@ -84,6 +91,18 @@ export function TranscriptionSettings({ open }: { open: boolean }) {
 				<span>{te("transcriptionSettings.autoTranscribe")}</span>
 			</label>
 			<p className={styles.hint}>{te("transcriptionSettings.manualSrtHint")}</p>
+			<label style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+				<input
+					type="checkbox"
+					checked={traditionalChinese}
+					disabled={busy || !snapshot}
+					onChange={(event) => {
+						setTraditionalChinese(event.target.checked);
+						setSaved(false);
+					}}
+				/>
+				<span>{te("transcriptionSettings.traditionalPreference")}</span>
+			</label>
 			<div className={styles.field}>
 				<label htmlFor="stt-provider">{te("transcriptionSettings.provider")}</label>
 				<select
@@ -91,14 +110,41 @@ export function TranscriptionSettings({ open }: { open: boolean }) {
 					value={provider}
 					disabled={busy || !snapshot}
 					onChange={(event) => {
-						setProvider(event.target.value as "whisper" | "gmi");
+						setProvider(event.target.value as TranscriptionProvider);
 						setSaved(false);
 					}}
 				>
 					<option value="whisper">{te("transcriptionSettings.whisper")}</option>
 					<option value="gmi">GMI Cloud Gemini 3 Flash Preview</option>
+					<option value="agy" disabled={snapshot?.agyAvailable !== true}>
+						{te("transcriptionSettings.agy")}
+					</option>
 				</select>
 			</div>
+			<p className={styles.hint}>{te("transcriptionSettings.speedHint")}</p>
+			{provider === "whisper" ? (
+				<p className={styles.hint}>{te("transcriptionSettings.localHint")}</p>
+			) : null}
+			{snapshot?.agyAvailable !== true ? (
+				<p className={styles.hint}>{te("transcriptionSettings.agyUnavailable")}</p>
+			) : null}
+			{provider === "agy" ? (
+				<>
+					<p className={styles.hint}>{te("transcriptionSettings.agyHint")}</p>
+					<label style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+						<input
+							type="checkbox"
+							checked={agyConsent}
+							disabled={busy}
+							onChange={(event) => {
+								setAgyConsent(event.target.checked);
+								setSaved(false);
+							}}
+						/>
+						<span>{te("transcriptionSettings.agyConsent")}</span>
+					</label>
+				</>
+			) : null}
 			{provider === "gmi" ? (
 				<>
 					<p className={styles.hint}>{te("transcriptionSettings.traditional")}</p>
@@ -150,6 +196,8 @@ export function TranscriptionSettings({ open }: { open: boolean }) {
 					disabled={
 						busy ||
 						!snapshot ||
+						(provider === "agy" &&
+							(snapshot.agyAvailable !== true || (autoTranscribe && !agyConsent))) ||
 						(provider === "gmi" &&
 							autoTranscribe &&
 							(!consent || (!apiKey.trim() && !snapshot.hasApiKey)))
@@ -159,6 +207,10 @@ export function TranscriptionSettings({ open }: { open: boolean }) {
 							provider,
 							autoTranscribe,
 							cloudConsent: provider === "gmi" && consent,
+							...(provider === "agy" ? { agyCloudConsent: agyConsent } : {}),
+							...(traditionalChinese !== (snapshot?.traditionalChinese === true)
+								? { traditionalChinese }
+								: {}),
 							...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
 						})
 					}

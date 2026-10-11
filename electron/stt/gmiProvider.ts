@@ -13,6 +13,7 @@ export interface GmiTranscribeChunkRequest {
 	samples: Float32Array;
 	apiKey: string;
 	language?: string;
+	traditionalChinese?: boolean;
 	signal?: AbortSignal;
 }
 
@@ -51,6 +52,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
 function parseTranscript(
 	value: unknown,
 	durationSec: number,
+	traditionalChinese: boolean,
 ): {
 	segments: SttPhraseSegment[];
 	detectedLanguage: string;
@@ -82,7 +84,7 @@ function parseTranscript(
 		segments.push({
 			startSec: segment.startSec,
 			endSec: segment.endSec,
-			text: toTaiwanTraditional(segment.text.trim()),
+			text: traditionalChinese ? toTaiwanTraditional(segment.text.trim()) : segment.text.trim(),
 		});
 		previousEnd = segment.endSec;
 	}
@@ -151,7 +153,8 @@ export class GmiTranscriptionProvider {
 		try {
 			const audio = await readFile(wavPath);
 			const prompt =
-				"請逐字轉錄這段音訊，中文一律使用臺灣繁體中文，保留英文及原語言，不摘要不補寫。" +
+				"請逐字轉錄這段音訊，保留原語言，不摘要不補寫。" +
+				(request.traditionalChinese ? "中文一律使用臺灣繁體中文。" : "保留中文原文用字。") +
 				"回傳 detectedLanguage（ISO 639-1）與 segments。每段以自然短句分段，包含音訊內實際開始與結束" +
 				"秒數 startSec/endSec 和 text。時間從這個音訊片段的 0 秒開始，非 MM:SS，段落不可重疊，" +
 				`不可超過 ${durationSec.toFixed(5)} 秒。無人聲回傳空 segments，不替靜音編造字幕。` +
@@ -197,7 +200,11 @@ export class GmiTranscriptionProvider {
 			} catch {
 				throw new Error("GMI returned unreadable response JSON");
 			}
-			const transcript = parseTranscript(readCandidate(parsed), durationSec);
+			const transcript = parseTranscript(
+				readCandidate(parsed),
+				durationSec,
+				request.traditionalChinese === true,
+			);
 			if (request.signal?.aborted) throw new DOMException("Transcription cancelled", "AbortError");
 			const elapsedSec = (performance.now() - started) / 1000;
 			return {

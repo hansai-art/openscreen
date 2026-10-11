@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type {
+	TranscriptionProvider,
 	TranscriptionSettingsSnapshot,
 	TranscriptionSettingsUpdate,
 } from "./settingsContract";
@@ -14,8 +15,10 @@ export interface CredentialCipher {
 }
 
 export class TranscriptionSettingsStore {
-	private provider: "whisper" | "gmi" = "whisper";
+	private provider: TranscriptionProvider = "whisper";
 	private cloudConsent = false;
+	private agyCloudConsent = false;
+	private traditionalChinese = false;
 	private autoTranscribe = true;
 	private apiKey: string | undefined;
 	private credentialLoaded = false;
@@ -38,9 +41,12 @@ export class TranscriptionSettingsStore {
 				"provider" in config &&
 				"cloudConsent" in config
 			) {
-				if (config.provider === "gmi" || config.provider === "whisper")
+				if (config.provider === "gmi" || config.provider === "whisper" || config.provider === "agy")
 					this.provider = config.provider;
 				this.cloudConsent = config.cloudConsent === true;
+				this.agyCloudConsent = "agyCloudConsent" in config && config.agyCloudConsent === true;
+				this.traditionalChinese =
+					"traditionalChinese" in config && config.traditionalChinese === true;
 				if ("autoTranscribe" in config && typeof config.autoTranscribe === "boolean")
 					this.autoTranscribe = config.autoTranscribe;
 				if ("hasStoredApiKey" in config && typeof config.hasStoredApiKey === "boolean")
@@ -54,7 +60,7 @@ export class TranscriptionSettingsStore {
 		} catch {
 			/* No saved encrypted credential. Do not access the OS keychain here. */
 		}
-		if (this.autoTranscribe) this.loadCredential();
+		if (this.autoTranscribe && this.provider === "gmi") this.loadCredential();
 	}
 	private encryptionAvailable(): boolean {
 		return (
@@ -91,33 +97,56 @@ export class TranscriptionSettingsStore {
 		return {
 			provider: this.provider,
 			cloudConsent: this.cloudConsent,
+			agyCloudConsent: this.agyCloudConsent,
+			traditionalChinese: this.traditionalChinese,
 			autoTranscribe: this.autoTranscribe,
 			hasApiKey: this.hasCredential(),
 		};
 	}
-	getProviderConfig(): { provider: "whisper" | "gmi"; cloudConsent: boolean; apiKey?: string } {
+	getProviderConfig(): {
+		provider: TranscriptionProvider;
+		cloudConsent: boolean;
+		agyCloudConsent: boolean;
+		traditionalChinese: boolean;
+		apiKey?: string;
+	} {
 		return {
 			provider: this.provider,
 			cloudConsent: this.cloudConsent,
-			apiKey: this.effectiveKey(),
+			agyCloudConsent: this.agyCloudConsent,
+			traditionalChinese: this.traditionalChinese,
+			apiKey: this.provider === "gmi" ? this.effectiveKey() : undefined,
 		};
 	}
 	update(update: TranscriptionSettingsUpdate): TranscriptionSettingsSnapshot {
 		if (typeof update !== "object" || update === null)
 			throw new Error("Invalid transcription settings");
-		if (update.provider !== undefined && update.provider !== "whisper" && update.provider !== "gmi")
+		if (
+			update.provider !== undefined &&
+			update.provider !== "whisper" &&
+			update.provider !== "gmi" &&
+			update.provider !== "agy"
+		)
 			throw new Error("Invalid transcription provider");
 		if (update.cloudConsent !== undefined && typeof update.cloudConsent !== "boolean")
 			throw new Error("Invalid cloud consent");
+		if (update.agyCloudConsent !== undefined && typeof update.agyCloudConsent !== "boolean")
+			throw new Error("Invalid AGY cloud consent");
+		if (update.traditionalChinese !== undefined && typeof update.traditionalChinese !== "boolean")
+			throw new Error("Invalid Chinese script preference");
 		if (update.autoTranscribe !== undefined && typeof update.autoTranscribe !== "boolean")
 			throw new Error("Invalid automatic transcription setting");
 		if (update.apiKey !== undefined && typeof update.apiKey !== "string")
 			throw new Error("Invalid API key");
 		const provider = update.provider ?? this.provider;
 		const cloudConsent = update.cloudConsent ?? this.cloudConsent;
+		const agyCloudConsent = update.agyCloudConsent ?? this.agyCloudConsent;
+		const traditionalChinese = update.traditionalChinese ?? this.traditionalChinese;
 		const autoTranscribe = update.autoTranscribe ?? this.autoTranscribe;
 		const nextKey = update.apiKey === undefined ? this.apiKey : update.apiKey.trim() || undefined;
 		const hasStoredApiKey = update.apiKey === undefined ? this.hasStoredApiKey : Boolean(nextKey);
+		if (autoTranscribe && provider === "agy" && !agyCloudConsent)
+			throw new Error("AGY transcription needs explicit cloud consent");
 		if (autoTranscribe && provider === "gmi" && !cloudConsent)
 			throw new Error("GMI transcription needs explicit cloud consent");
 		if (
@@ -137,10 +166,23 @@ export class TranscriptionSettingsStore {
 		}
 		this.writeAtomically(
 			this.configFile,
-			JSON.stringify({ provider, cloudConsent, autoTranscribe, hasStoredApiKey }, null, 2),
+			JSON.stringify(
+				{
+					provider,
+					cloudConsent,
+					agyCloudConsent,
+					traditionalChinese,
+					autoTranscribe,
+					hasStoredApiKey,
+				},
+				null,
+				2,
+			),
 		);
 		this.provider = provider;
 		this.cloudConsent = cloudConsent;
+		this.agyCloudConsent = agyCloudConsent;
+		this.traditionalChinese = traditionalChinese;
 		this.autoTranscribe = autoTranscribe;
 		this.hasStoredApiKey = hasStoredApiKey;
 		if (update.apiKey !== undefined) {
