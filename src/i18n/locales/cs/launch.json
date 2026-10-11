@@ -67,6 +67,8 @@
 		"defaultSourceName": "Obrazovka"
 	},
 	"recording": {
+		"devicesNotReady": "Recording devices are still loading. Try recording again.",
+		"sourcePickerFailed": "Could not open the screen picker. Try choosing a source again.",
 		"selectSource": "Vyberte prosím zdroj pro nahrávání",
 		"systemPicker": "Systém se zeptá, co sdílet",
 		"start": "Spustit nahrávání",

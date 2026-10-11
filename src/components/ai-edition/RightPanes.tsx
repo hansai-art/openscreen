@@ -864,6 +864,7 @@ export function TranscriptPane({
 	blocked?: { reason: TranscriptGateReason; message?: string };
 }) {
 	const ts = useScopedT("settings");
+	const te = useScopedT("editor");
 	// Subscribed here, not passed down: the playhead is rewritten every animation
 	// frame during playback, and reading it in NewEditorShell re-rendered the whole
 	// editor (timeline included) once per frame — see NativePlaybackSync there. Only
@@ -934,10 +935,13 @@ export function TranscriptPane({
 
 	// The insert gesture is dev-only until TTS (see openInsertion), so the copy follows
 	// the same gate: release builds must not advertise a dead gesture.
-	const helpText = ts("transcript.help");
-	const editingHint = ts(
-		insertionsEnabled() ? "transcript.editingHintDev" : "transcript.editingHint",
+	const hasPhraseTiming = sections.some(
+		(section) => section.transcript?.timingGranularity === "phrase",
 	);
+	const helpText = hasPhraseTiming ? te("transcriptionSettings.phraseHelp") : ts("transcript.help");
+	const editingHint = hasPhraseTiming
+		? te("transcriptionSettings.phraseEditingHint")
+		: ts(insertionsEnabled() ? "transcript.editingHintDev" : "transcript.editingHint");
 
 	if (captionsOpen) return <CaptionsPane onClose={() => setCaptionsOpen(false)} />;
 

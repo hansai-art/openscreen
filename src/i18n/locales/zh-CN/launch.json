@@ -67,6 +67,8 @@
 		"defaultSourceName": "屏幕"
 	},
 	"recording": {
+		"devicesNotReady": "Recording devices are still loading. Try recording again.",
+		"sourcePickerFailed": "Could not open the screen picker. Try choosing a source again.",
 		"selectSource": "请选择要录制的源",
 		"systemPicker": "系统将询问要共享的内容",
 		"start": "开始录制",

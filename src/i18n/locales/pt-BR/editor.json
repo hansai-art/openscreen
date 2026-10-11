@@ -432,5 +432,22 @@
 	"cpuCompositor": {
 		"notice": "Sem GPU compatível — a renderização ocorre na CPU, então a reprodução fica mais lenta.",
 		"exportWarning": "Sem GPU compatível: esta exportação roda na CPU e vai demorar muito mais que o normal."
+	},
+	"transcriptionSettings": {
+		"title": "Speech transcription",
+		"description": "Choose the engine used for transcripts and captions.",
+		"provider": "Transcription engine",
+		"whisper": "Whisper (local)",
+		"traditional": "GMI transcripts and captions use Taiwan Traditional Chinese.",
+		"apiKey": "GMI API key",
+		"keySet": "API key configured",
+		"consent": "Allow recording audio to be sent to GMI Cloud for transcription. API charges may apply.",
+		"save": "Save transcription settings",
+		"removeKey": "Remove GMI API key",
+		"saved": "Transcription settings saved",
+		"loadFailed": "Could not load transcription settings.",
+		"saveFailed": "Could not save transcription settings.",
+		"phraseHelp": "Gemini provides phrase timestamps. Captions and selections use complete phrases.",
+		"phraseEditingHint": "Editing or cutting acts on the selected phrase. Timing is estimated by Gemini."
 	}
 }

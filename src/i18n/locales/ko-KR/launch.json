@@ -67,6 +67,8 @@
 		"defaultSourceName": "화면"
 	},
 	"recording": {
+		"devicesNotReady": "Recording devices are still loading. Try recording again.",
+		"sourcePickerFailed": "Could not open the screen picker. Try choosing a source again.",
 		"selectSource": "녹화할 소스를 선택해 주세요",
 		"systemPicker": "공유할 대상을 시스템이 묻습니다",
 		"start": "녹화 시작",

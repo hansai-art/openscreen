@@ -501,6 +501,10 @@ interface Window {
 		onRequestCloseConfirm: (callback: () => void) => () => void;
 		sendCloseConfirmResponse: (choice: "save" | "discard" | "cancel") => void;
 		stt: {
+			getSettings: () => Promise<import("./stt/settingsContract").TranscriptionSettingsSnapshot>;
+			updateSettings: (
+				update: import("./stt/settingsContract").TranscriptionSettingsUpdate,
+			) => Promise<import("./stt/settingsContract").TranscriptionSettingsSnapshot>;
 			transcribe: (
 				request: import("./stt/transcriptionContract").SttTranscribeRequest,
 			) => Promise<import("./stt/transcriptionContract").SttTranscribeResponse>;

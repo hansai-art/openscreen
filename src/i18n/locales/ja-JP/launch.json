@@ -67,6 +67,8 @@
 		"defaultSourceName": "画面"
 	},
 	"recording": {
+		"devicesNotReady": "Recording devices are still loading. Try recording again.",
+		"sourcePickerFailed": "Could not open the screen picker. Try choosing a source again.",
 		"selectSource": "録画するソースを選択してください",
 		"systemPicker": "共有する対象はシステムが確認します",
 		"start": "録画を開始",

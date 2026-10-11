@@ -84,6 +84,7 @@ enum HelperError: Error, CustomStringConvertible {
 	case invalidSourceType(String)
 	case permissionDenied(String)
 	case writerSetupFailed(String)
+	case microphoneCaptureFailed(String)
 
 	var description: String {
 		switch self {
@@ -99,7 +100,7 @@ enum HelperError: Error, CustomStringConvertible {
 			return "Unsupported source type: \(sourceType)."
 		case .permissionDenied(let message):
 			return message
-		case .writerSetupFailed(let message):
+		case .writerSetupFailed(let message), .microphoneCaptureFailed(let message):
 			return message
 		}
 	}
@@ -126,6 +127,7 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
 	private let request: RecordingRequest
 	private let sampleQueue = DispatchQueue(label: "app.openscreen.sck-helper.samples")
+	private let audioQueue = DispatchQueue(label: "app.openscreen.sck-helper.audio")
 	private let stateQueue = DispatchQueue(label: "app.openscreen.sck-helper.state")
 	private var stream: SCStream?
 	private var writer: AVAssetWriter?
@@ -147,9 +149,7 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 	private var shutdownTask: Task<Void, Never>?
 	/// Direct display captures only. See `startExclusionRefresh`.
 	private var exclusionRefreshTask: Task<Void, Never>?
-	private var isPaused = false
-	private var pauseStartedAt: CMTime?
-	private var totalPausedDuration = CMTime.zero
+	private var timeline = RecordingTimeline()
 	/// Sample queue only. See `VideoTimestampGate` for the failure it exists to prevent.
 	private var videoTimestampGate = VideoTimestampGate()
 	/// Sample queue only. Frames the writer input was not ready for, or refused, reported in
@@ -159,7 +159,8 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 	private var outputWidth = 1920
 	private var outputHeight = 1080
 	private var captureFrame = CGRect.zero
-	private let microphoneOutputTypeRawValue = 2
+	private var microphoneCapture: AVCaptureMicrophone?
+	private var acceptsMicrophoneAudio = true
 	private let hostClock = CMClockGetHostTimeClock()
 	private let picked: PickedSource?
 	/// A `SystemAudioTap` (macOS 14.2+), held untyped so this class keeps its macOS 13 floor.
@@ -214,25 +215,57 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
 		try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue)
 		if request.audio.system.enabled && !tapsSystemAudio {
-			try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue)
+			try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: audioQueue)
 		}
-		if nativeMicrophoneEnabled {
-			guard let microphoneOutputType = SCStreamOutputType(rawValue: microphoneOutputTypeRawValue) else {
-				throw HelperError.unsupportedFeature(
-					"Native microphone capture requires a macOS version with ScreenCaptureKit microphone output."
-				)
-			}
-			try stream.addStreamOutput(self, type: microphoneOutputType, sampleHandlerQueue: sampleQueue)
-		}
-		try setupWriter()
-		startSystemAudioTapIfNeeded()
 
+		try setupWriter()
 		self.stream = stream
-		emit([
-			"event": "ready",
-			"schemaVersion": 1,
-		])
-		try await stream.startCapture()
+		if nativeMicrophoneEnabled {
+			let microphone = AVCaptureMicrophone(
+				deviceID: request.audio.microphone.deviceId,
+				deviceName: request.audio.microphone.deviceName,
+				onBuffer: { [weak self] buffer in
+					// The converted buffer is immutable; the audio queue owns ingestion.
+					let delivery = DispatchWorkItem { [weak self] in self?.ingestMicrophoneAudio(buffer) }
+					self?.audioQueue.async(execute: delivery)
+				},
+				onFailure: { [weak self] message in
+					emitError(code: "microphone-capture-failed", message: message)
+					Task { await self?.stop() }
+				}
+			)
+			let ownsMicrophone = stateQueue.sync { () -> Bool in
+				guard !timeline.isStopped else { return false }
+				microphoneCapture = microphone
+				return true
+			}
+			guard ownsMicrophone else {
+				throw HelperError.microphoneCaptureFailed("Recording startup was stopped.")
+			}
+			do {
+				try await microphone.start(timeout: 3)
+				emit(["event": "microphone-ready", "backend": "avcapture"])
+			} catch {
+				let message = "Microphone capture did not start: \(error.localizedDescription)"
+				emitError(code: "microphone-startup-failed", message: message)
+				await stop()
+				throw HelperError.microphoneCaptureFailed(message)
+			}
+		}
+		guard !stateQueue.sync(execute: { timeline.isStopped }) else {
+			throw HelperError.microphoneCaptureFailed("Recording startup was stopped.")
+		}
+		startSystemAudioTapIfNeeded()
+		emit(["event": "ready", "schemaVersion": 1])
+		do {
+			let started = try await startCaptureUnlessStopped(
+				isStopped: { self.stateQueue.sync { self.timeline.isStopped } },
+				start: { try await stream.startCapture() }, stop: { try await stream.stopCapture() })
+			guard started else { throw HelperError.microphoneCaptureFailed("Recording startup was stopped.") }
+		} catch {
+			await stop()
+			throw error
+		}
 		if picked == nil, request.source.type == "display", let displayID = request.source.displayId {
 			startExclusionRefresh(displayID: displayID)
 		}
@@ -243,6 +276,7 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 			if let shutdownTask {
 				return shutdownTask
 			}
+			timeline.stop(at: CMClockGetTime(hostClock))
 			let task = Task {
 				await self.performStop()
 			}
@@ -254,6 +288,12 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
 	private func performStop() async {
 		exclusionRefreshTask?.cancel()
+		audioQueue.sync { acceptsMicrophoneAudio = false }
+		let microphone = stateQueue.sync { () -> AVCaptureMicrophone? in
+			defer { microphoneCapture = nil }
+			return microphoneCapture
+		}
+		microphone?.stop()
 		do {
 			try await stream?.stopCapture()
 		} catch {
@@ -276,7 +316,7 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 			guard let self else {
 				return
 			}
-			self.sampleQueue.async {
+			self.audioQueue.async {
 				self.ingestTappedSystemAudio(sampleBuffer)
 			}
 		}
@@ -302,7 +342,7 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 	/// prompt left unanswered cannot hold the recording's stop hostage; what the tap still
 	/// delivers is dropped by `acceptsTappedAudio`.
 	private func stopSystemAudioTap() {
-		sampleQueue.sync {
+		audioQueue.sync {
 			acceptsTappedAudio = false
 		}
 		guard let tap = systemAudioTap else {
@@ -316,7 +356,7 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 		}
 	}
 
-	/// Sample queue. The tap's audio takes the same pause and retime path ScreenCaptureKit's
+	/// Audio queue. The tap's audio takes the same pause and retime path ScreenCaptureKit's
 	/// system audio took in `stream(_:didOutputSampleBuffer:of:)`.
 	private func ingestTappedSystemAudio(_ sampleBuffer: CMSampleBuffer) {
 		guard acceptsTappedAudio else {
@@ -332,48 +372,25 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 		audioMixer?.ingest(sampleBuffer, from: .system)
 	}
 
+	private func ingestMicrophoneAudio(_ sampleBuffer: CMSampleBuffer) {
+		guard acceptsMicrophoneAudio else { return }
+		let pauseState = currentPauseState()
+		guard !pauseState.paused,
+			let buffer = retimedSampleBuffer(sampleBuffer, subtracting: pauseState.offset) else { return }
+		audioMixer?.ingest(buffer, from: .microphone)
+	}
+
 	func pause() {
-		let didPause = stateQueue.sync {
-			if shutdownTask != nil || isPaused {
-				return false
-			}
-
-			isPaused = true
-			pauseStartedAt = CMClockGetTime(hostClock)
-			return true
-		}
-
+		let didPause = stateQueue.sync { timeline.pause(at: CMClockGetTime(hostClock)) }
 		if didPause {
-			emit([
-				"event": "recording-paused",
-				"timestampMs": Int(Date().timeIntervalSince1970 * 1000),
-			])
+			emit(["event": "recording-paused", "timestampMs": Int(Date().timeIntervalSince1970 * 1000)])
 		}
 	}
 
 	func resume() {
-		let didResume = stateQueue.sync {
-			if shutdownTask != nil || !isPaused {
-				return false
-			}
-
-			if let pauseStartedAt {
-				let now = CMClockGetTime(hostClock)
-				totalPausedDuration = CMTimeAdd(
-					totalPausedDuration,
-					CMTimeSubtract(now, pauseStartedAt)
-				)
-			}
-			isPaused = false
-			pauseStartedAt = nil
-			return true
-		}
-
+		let didResume = stateQueue.sync { timeline.resume(at: CMClockGetTime(hostClock)) }
 		if didResume {
-			emit([
-				"event": "recording-resumed",
-				"timestampMs": Int(Date().timeIntervalSince1970 * 1000),
-			])
+			emit(["event": "recording-resumed", "timestampMs": Int(Date().timeIntervalSince1970 * 1000)])
 		}
 	}
 
@@ -401,12 +418,7 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 			return
 		}
 
-		if type.rawValue == microphoneOutputTypeRawValue {
-			audioMixer?.ingest(sampleBuffer, from: .microphone)
-			return
-		}
-
-		guard type == .screen else {
+		guard type == .screen, !stateQueue.sync(execute: { timeline.isStopped }) else {
 			return
 		}
 		guard isCompleteFrame(sampleBuffer) else {
@@ -433,8 +445,10 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 			writer.startWriting()
 			writer.startSession(atSourceTime: presentationTime)
 			didStartWriting = true
-			audioMixer?.beginTimeline(at: presentationTime)
-			startAudioTicker()
+			audioQueue.sync {
+				audioMixer?.beginTimeline(at: presentationTime)
+				startAudioTicker()
+			}
 		}
 		// Checked before the readiness gate, not only at a false append: a failed
 		// writer is not guaranteed to call itself ready, and an append that is never
@@ -721,31 +735,9 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 		configuration.excludesCurrentProcessAudio = true
 		configuration.capturesAudio = request.audio.system.enabled && !tapsSystemAudio
 
-		if request.audio.microphone.enabled {
-			guard supportsNativeMicrophoneCapture(streamConfig: configuration) else {
-				nativeMicrophoneEnabled = false
-				emit([
-					"event": "warning",
-					"code": "microphone-unavailable",
-					"message": "Native microphone capture requires ScreenCaptureKit microphone support on this macOS version.",
-				])
-				return configuration
-			}
-			nativeMicrophoneEnabled = true
-			configuration.capturesAudio = true
-			configuration.setValue(true, forKey: "captureMicrophone")
-			if let deviceId = resolveMicrophoneCaptureDeviceID() {
-				configuration.setValue(deviceId, forKey: "microphoneCaptureDeviceID")
-			} else if requestedASpecificMicrophone {
-				emit([
-					"event": "warning",
-					"code": "microphone-defaulted",
-					"message": "The requested microphone could not be resolved; capturing the default input.",
-				])
-			}
-		} else {
-			nativeMicrophoneEnabled = false
-		}
+		// The microphone is an independent AVCaptureSession. Never ask SCStream to own it:
+		// a configured SCK microphone can report a screen take while handing over no PCM.
+		nativeMicrophoneEnabled = request.audio.microphone.enabled
 
 		return configuration
 	}
@@ -839,17 +831,10 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 	/// paused — the same transform `retimedSampleBuffer` applies to every sample, so this and
 	/// the presentation timestamps are answers in one domain.
 	///
-	/// Frozen while paused, because `pauseStartedAt` stops moving and `totalPausedDuration`
-	/// does not yet include the pause in progress. On resume the offset grows by exactly the
-	/// pause, so the position continues from where it froze: the pause interrupts the audio
-	/// clock without shifting anything recorded after it. That is the same property the
-	/// Windows mixer gets by re-deriving its anchor on resume, derived here instead of tracked.
+	/// Frozen by a pause and permanently fixed by the first stop request. Hardware shutdown
+	/// and writer finalization cannot extend the take with additional silence.
 	private func timelineNow() -> CMTime {
-		let (paused, offset, pausedAt) = stateQueue.sync {
-			(isPaused, totalPausedDuration, pauseStartedAt)
-		}
-		let now = paused ? (pausedAt ?? CMClockGetTime(hostClock)) : CMClockGetTime(hostClock)
-		return CMTimeSubtract(now, offset)
+		stateQueue.sync { timeline.position(at: CMClockGetTime(hostClock)) }
 	}
 
 	/// A take that nothing is playing into is exactly the take whose audio timeline has to keep
@@ -861,7 +846,7 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 			return
 		}
 
-		let timer = DispatchSource.makeTimerSource(queue: sampleQueue)
+		let timer = DispatchSource.makeTimerSource(queue: audioQueue)
 		timer.schedule(
 			deadline: .now() + .milliseconds(10),
 			repeating: .milliseconds(10),
@@ -874,7 +859,7 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 			// A still screen delivers no complete frames, so the frame path alone
 			// could sit on a dead writer for as long as nothing on screen moves.
 			if self.writer?.status == .failed {
-				self.reportWriterFailure("writer status")
+				self.sampleQueue.async { self.reportWriterFailure("writer status") }
 				return
 			}
 			self.audioMixer?.tick()
@@ -895,7 +880,7 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 		// every later take and the user's pick down with it. There is nothing to finalise:
 		// drop whatever file the writer may have created and say the take produced none.
 		if writer.status == .unknown {
-			sampleQueue.sync {
+			audioQueue.sync {
 				audioTicker?.cancel()
 				audioTicker = nil
 			}
@@ -907,18 +892,15 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 			return
 		}
 
-		// Capture has stopped, so nothing is in flight on the sample queue any more; hopping
-		// onto it once is what makes the mixer's final flush safe without a lock, and it is
-		// also where the ticker has to die, since that is the queue it fires on.
+		// All source ingestion and the ticker use audioQueue. Its barrier makes the final
+		// flush safe, independent of video encoding on sampleQueue.
 		//
 		// `endSession` is the trailing half of the same bug the clock-driven cursor fixes at
 		// the front. Without it the file ended at the last sample anything happened to deliver,
 		// so a ten-second take that went quiet at six yielded a six-second recording; the
-		// helper had never called it at all. `end` comes from the same clock the mixer runs on
-		// and is read after `stopCapture()` returned, so it is at or past every sample already
-		// appended — which is what makes it safe to hand to `endSession`, since a source time
-		// before an appended sample would trim that sample back out.
-		sampleQueue.sync {
+		// helper had never called it at all. `end` uses the first stop request's host-clock
+		// snapshot, rather than the completion of slow source shutdown.
+		audioQueue.sync {
 			audioTicker?.cancel()
 			audioTicker = nil
 
@@ -984,7 +966,7 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
 	private func currentPauseState() -> (paused: Bool, offset: CMTime) {
 		stateQueue.sync {
-			(isPaused, totalPausedDuration)
+			(timeline.isPaused, timeline.pauseOffset)
 		}
 	}
 
@@ -1104,46 +1086,6 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 		return max(1, mode.pixelWidth / max(1, mode.width))
 	}
 
-	private func supportsNativeMicrophoneCapture(streamConfig: SCStreamConfiguration) -> Bool {
-		streamConfig.responds(to: Selector(("setCaptureMicrophone:"))) &&
-			streamConfig.responds(to: Selector(("setMicrophoneCaptureDeviceID:"))) &&
-			SCStreamOutputType(rawValue: microphoneOutputTypeRawValue) != nil
-	}
-
-	/// Did the user actually ask for a particular microphone?
-	///
-	/// The same test the Windows helper makes before emitting this warning
-	/// (`wantedAParticularMicrophone` in wgc-capture/src/wasapi_loopback_capture.cpp),
-	/// and it has to be made here too because `resolveMicrophoneCaptureDeviceID()`
-	/// returns nil for two very different situations. One is a chosen microphone that
-	/// nothing here could find, which is worth saying out loud. The other is no choice
-	/// at all, which is the common case and has to stay silent: the HUD leaves both
-	/// fields unset until its picker moves off "default", and persists the literal id
-	/// "default" when the user picks Chromium's own Default entry — so both shapes
-	/// arrive here meaning "the system default is fine", not "your microphone is gone".
-	private var requestedASpecificMicrophone: Bool {
-		let deviceId =
-			request.audio.microphone.deviceId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-		let deviceName =
-			request.audio.microphone.deviceName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-		// "default" has to veto the name, not sit beside it. Chromium's picker
-		// persists BOTH fields from whichever entry was clicked, and its Default
-		// entry is labelled "Default - Microphone (…)" — a string no AVCaptureDevice
-		// localizedName ever matches. Reading the name here meant that picking
-		// "Default" warned about a microphone the user never chose.
-		if deviceId == "default" { return false }
-		return !deviceId.isEmpty || !deviceName.isEmpty
-	}
-
-	private func resolveMicrophoneCaptureDeviceID() -> String? {
-		resolveMicrophoneDeviceID(
-			deviceID: request.audio.microphone.deviceId,
-			deviceName: request.audio.microphone.deviceName,
-			devices: AVCaptureDevice.devices(for: .audio).map {
-				(id: $0.uniqueID, name: $0.localizedName)
-			}
-		)
-	}
 }
 
 @main
@@ -1238,20 +1180,9 @@ struct OpenScreenScreenCaptureKitHelper {
 			let request = try decoder.decode(RecordingRequest.self, from: requestData)
 			let recorder = ScreenCaptureRecorder(request: request)
 			let stopTask = Task.detached {
-				while let line = readLine() {
-					let command = line.trimmingCharacters(in: .whitespacesAndNewlines)
-					switch command {
-					case "pause":
-						recorder.pause()
-					case "resume":
-						recorder.resume()
-					case "stop":
-						await recorder.stop()
-						exit(0)
-					default:
-						break
-					}
-				}
+				await runRecordingCommands(readCommand: { readLine() },
+					pause: { recorder.pause() }, resume: { recorder.resume() },
+					stop: { await recorder.stop() })
 			}
 
 			try await recorder.start()

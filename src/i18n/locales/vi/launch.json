@@ -62,6 +62,8 @@
 		"defaultSourceName": "Màn hình"
 	},
 	"recording": {
+		"devicesNotReady": "Recording devices are still loading. Try recording again.",
+		"sourcePickerFailed": "Could not open the screen picker. Try choosing a source again.",
 		"selectSource": "Vui lòng chọn một nguồn để ghi",
 		"systemPicker": "Hệ thống sẽ hỏi bạn muốn chia sẻ gì",
 		"start": "Bắt đầu ghi hình",

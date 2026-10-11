@@ -144,6 +144,24 @@ describe("readNativeMacStopOutcome", () => {
 		});
 	});
 
+	it("preserves the finalized file and microphone interruption warning", () => {
+		const message = "The microphone was disconnected during capture.";
+		const failed = line({ event: "error", code: "microphone-capture-failed", message });
+		const outcome = readNativeMacStopOutcome(started + failed + stopped, null, TARGET);
+		expect(outcome).toMatchObject({ ok: true, screenVideoPath: TARGET });
+		expect(outcome?.ok && outcome.warning).toContain("microphone was disconnected during capture");
+		expect(outcome?.ok && outcome.warning).toContain("The part recorded until then was saved");
+	});
+
+	it("waits for microphone shutdown instead of treating its first error as the terminal result", () => {
+		const failed = line({
+			event: "error",
+			code: "microphone-capture-failed",
+			message: "Microphone input stopped.",
+		});
+		expect(readNativeMacStopOutcome(started + failed, null, TARGET)).toBeNull();
+	});
+
 	it("tells the user when the system audio they asked for could not be recorded", () => {
 		const tapFailed = line({
 			event: "warning",

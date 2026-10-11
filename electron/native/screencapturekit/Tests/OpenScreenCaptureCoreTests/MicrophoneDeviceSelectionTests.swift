@@ -12,6 +12,10 @@ final class MicrophoneDeviceSelectionTests: XCTestCase {
 		XCTAssertEqual(resolveMicrophoneDeviceID(deviceID: "mv7", deviceName: "Studio Display", devices: devices), "mv7")
 	}
 
+	func testDefaultDeviceIDOverridesAStaleNamedDevice() {
+		XCTAssertNil(resolveMicrophoneDeviceID(deviceID: "default", deviceName: "Shure MV7", devices: devices))
+	}
+
 	func testExactNameAndWhitespace() {
 		XCTAssertEqual(resolveMicrophoneDeviceID(deviceID: nil, deviceName: " Shure MV7 ", devices: devices), "mv7")
 	}
@@ -34,4 +38,10 @@ final class MicrophoneDeviceSelectionTests: XCTestCase {
 		let decorated = devices + [(id: "literal", name: "Shure MV7 (14ed:1012)")]
 		XCTAssertEqual(resolveMicrophoneDeviceID(deviceID: nil, deviceName: "Shure MV7 (14ed:1012)", devices: decorated), "literal")
 	}
+	func testExplicitMissingAndAmbiguousInputsDoNotSilentlyDefault() {
+		XCTAssertEqual(microphoneDeviceChoice(deviceID: "missing", deviceName: "Missing", devices: devices), .unavailable)
+		XCTAssertEqual(microphoneDeviceChoice(deviceID: "hash", deviceName: "Same", devices: [(id: "one", name: "Same"), (id: "two", name: "Same")]), .unavailable)
+		XCTAssertEqual(microphoneDeviceChoice(deviceID: "default", deviceName: "Shure MV7", devices: devices), .systemDefault)
+	}
+
 }

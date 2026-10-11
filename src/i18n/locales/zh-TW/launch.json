@@ -67,6 +67,8 @@
 		"defaultSourceName": "螢幕"
 	},
 	"recording": {
+		"devicesNotReady": "錄影裝置仍在載入，請稍後再按錄影。",
+		"sourcePickerFailed": "無法開啟畫面選擇器，請重新選擇錄影來源。",
 		"selectSource": "請選擇要錄製的來源",
 		"systemPicker": "系統將詢問要分享的內容",
 		"start": "開始錄製",

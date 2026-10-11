@@ -67,6 +67,8 @@
 		"defaultSourceName": "Ekran"
 	},
 	"recording": {
+		"devicesNotReady": "Recording devices are still loading. Try recording again.",
+		"sourcePickerFailed": "Could not open the screen picker. Try choosing a source again.",
 		"selectSource": "Lütfen kayıt için bir kaynak seçin",
 		"systemPicker": "Sisteminiz neyi paylaşacağınızı soracak",
 		"start": "Kaydı başlat",

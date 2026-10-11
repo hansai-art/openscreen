@@ -2,6 +2,7 @@
 import "@testing-library/jest-dom";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode } from "react";
+import { Toaster, toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { nativeBridgeClient } from "@/native";
 import type { NativePlatform } from "@/native/contracts";
@@ -170,6 +171,9 @@ vi.mock("@/contexts/I18nContext", () => ({
 			"recording.systemPicker": "Your system will ask what to share",
 			"recording.start": "Start recording",
 			"recording.stop": "Stop and save the recording",
+			"recording.devicesNotReady": "Recording devices are still loading. Try recording again.",
+			"recording.sourcePickerFailed":
+				"Could not open the screen picker. Try choosing a source again.",
 			"tooltips.useVerticalTray": "Use vertical tray",
 			"tooltips.useHorizontalTray": "Use horizontal tray",
 			"tooltips.changeSource": "Choose another screen or window",
@@ -973,6 +977,46 @@ describe("LaunchWindow record button", () => {
 		await waitFor(() => {
 			expect(recorderState.value.toggleRecording).toHaveBeenCalledTimes(1);
 		});
+	});
+
+	it("shows a visible reason when device preferences never become ready", async () => {
+		recorderState.value.recordingPrefsLoaded = false;
+		stubElectronAPI(vi.fn(async () => displayOneSource));
+		renderLaunchWindow();
+		render(<Toaster />);
+		const recordButton = await screen.findByTestId("launch-record-button");
+		await waitFor(() => expect(recordButton).toHaveAttribute("aria-label", "Start recording"));
+
+		vi.useFakeTimers();
+		try {
+			fireEvent.click(recordButton);
+			await act(async () => vi.advanceTimersByTimeAsync(2_600));
+			expect(
+				screen.getByText("Recording devices are still loading. Try recording again."),
+			).toBeVisible();
+			expect(recorderState.value.toggleRecording).not.toHaveBeenCalled();
+		} finally {
+			toast.dismiss();
+			vi.useRealTimers();
+		}
+	});
+
+	it("shows a visible reason when opening the source picker fails", async () => {
+		window.electronAPI.openSourceSelector = vi.fn(async () => {
+			throw new Error("The picker helper exited");
+		});
+		renderLaunchWindow();
+		render(<Toaster />);
+		fireEvent.click(await screen.findByTestId("launch-record-button"));
+
+		try {
+			expect(
+				await screen.findByText("Could not open the screen picker. Try choosing a source again."),
+			).toBeVisible();
+			expect(recorderState.value.toggleRecording).not.toHaveBeenCalled();
+		} finally {
+			toast.dismiss();
+		}
 	});
 
 	it("starts with the latest record callback after prefs finish loading", async () => {

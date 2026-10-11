@@ -53,6 +53,7 @@ export type NativeMacCaptureStopResult =
 const INTERRUPTION_ERROR_CODES = new Set([
 	"writer-failed-during-capture",
 	"capture-stopped-with-error",
+	"microphone-capture-failed",
 ]);
 
 /** Shown when a finished take could not capture the system audio it was asked for. */

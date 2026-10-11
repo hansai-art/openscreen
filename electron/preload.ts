@@ -589,6 +589,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
 		};
 	},
 	stt: {
+		getSettings: (): Promise<import("./stt/settingsContract").TranscriptionSettingsSnapshot> =>
+			ipcRenderer.invoke("stt:settings:get"),
+		updateSettings: (
+			update: import("./stt/settingsContract").TranscriptionSettingsUpdate,
+		): Promise<import("./stt/settingsContract").TranscriptionSettingsSnapshot> =>
+			ipcRenderer.invoke("stt:settings:update", update),
 		transcribe: (request: SttTranscribeRequest): Promise<SttTranscribeResponse> => {
 			return ipcRenderer.invoke("stt:transcribe", request) as Promise<SttTranscribeResponse>;
 		},

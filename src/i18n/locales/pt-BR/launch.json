@@ -67,6 +67,8 @@
 		"defaultSourceName": "Tela"
 	},
 	"recording": {
+		"devicesNotReady": "Recording devices are still loading. Try recording again.",
+		"sourcePickerFailed": "Could not open the screen picker. Try choosing a source again.",
 		"selectSource": "Por favor, selecione uma fonte para gravar",
 		"systemPicker": "O sistema perguntará o que compartilhar",
 		"start": "Iniciar gravação",

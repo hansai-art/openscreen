@@ -76,6 +76,22 @@ final class AudioBufferListSampleBufferTests: XCTestCase {
 		XCTAssertTrue(CMSampleBufferDataIsReady(sampleBuffer))
 	}
 
+	func testClockConversionPreservesSamplesAndUsesConvertedTimestamp() throws {
+		let format = try nonInterleavedFloatFormat()
+		let original = try XCTUnwrap(withStereoBufferList(left: [0.5, -0.5], right: [0.25, -0.25]) {
+			makeAudioSampleBuffer(copying: $0, format: format,
+				hostTime: CMClockConvertHostTimeToSystemUnits(CMTime(seconds: 1, preferredTimescale: 48_000)))
+		})
+		let converted = try XCTUnwrap(copyAudioSampleBuffer(original, convertingTime: {
+			CMTimeAdd($0, CMTime(seconds: 10, preferredTimescale: 48_000))
+		}))
+		XCTAssertEqual(CMTimeGetSeconds(converted.presentationTimeStamp), 11, accuracy: 0.00001)
+		XCTAssertEqual(CMTimeGetSeconds(original.presentationTimeStamp), 1, accuracy: 0.00001)
+		XCTAssertEqual(CMSampleBufferGetNumSamples(converted), 2)
+		XCTAssertTrue(CMSampleBufferDataIsReady(converted))
+		XCTAssertNil(copyAudioSampleBuffer(original, convertingTime: { _ in .invalid }))
+	}
+
 	func testCopiesTheSamplesOutOfTheCallbacksBuffers() throws {
 		let format = try nonInterleavedFloatFormat()
 		let sampleBuffer = try XCTUnwrap(withStereoBufferList(left: [0.5, -0.5], right: [0.25, 1]) {

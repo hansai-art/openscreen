@@ -7,6 +7,8 @@ public func resolveMicrophoneDeviceID(
 	deviceName: String?,
 	devices: [(id: String, name: String)]
 ) -> String? {
+	// Chromium's default entry must use the OS default, even with a stale saved name.
+	if deviceID?.trimmingCharacters(in: .whitespacesAndNewlines) == "default" { return nil }
 	if let id = deviceID?.trimmingCharacters(in: .whitespacesAndNewlines),
 		devices.contains(where: { $0.id == id }) {
 		return id
@@ -24,4 +26,21 @@ public func resolveMicrophoneDeviceID(
 	guard normalized != name else { return nil }
 	let matches = devices.filter { $0.name == normalized }
 	return matches.count == 1 ? matches[0].id : nil
+}
+
+
+public enum MicrophoneDeviceChoice: Equatable {
+	case systemDefault
+	case device(String)
+	case unavailable
+}
+
+public func microphoneDeviceChoice(deviceID: String?, deviceName: String?,
+	devices: [(id: String, name: String)]) -> MicrophoneDeviceChoice {
+	let id = deviceID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+	let name = deviceName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+	if id == "default" || (id.isEmpty && name.isEmpty) { return .systemDefault }
+	guard let selected = resolveMicrophoneDeviceID(deviceID: id, deviceName: name, devices: devices)
+	else { return .unavailable }
+	return .device(selected)
 }

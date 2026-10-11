@@ -67,6 +67,8 @@
 		"defaultSourceName": "Bildschirm"
 	},
 	"recording": {
+		"devicesNotReady": "Recording devices are still loading. Try recording again.",
+		"sourcePickerFailed": "Could not open the screen picker. Try choosing a source again.",
 		"selectSource": "Bitte wähle eine Quelle für die Aufnahme",
 		"systemPicker": "Dein System fragt gleich, was du teilen möchtest",
 		"start": "Aufnahme starten",

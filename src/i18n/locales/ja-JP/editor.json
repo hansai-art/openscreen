@@ -432,5 +432,22 @@
 	"cpuCompositor": {
 		"notice": "対応 GPU がないため CPU で描画しています。再生が遅くなります。",
 		"exportWarning": "対応 GPU がありません。この書き出しは CPU で実行されるため、通常よりはるかに時間がかかります。"
+	},
+	"transcriptionSettings": {
+		"title": "Speech transcription",
+		"description": "Choose the engine used for transcripts and captions.",
+		"provider": "Transcription engine",
+		"whisper": "Whisper (local)",
+		"traditional": "GMI transcripts and captions use Taiwan Traditional Chinese.",
+		"apiKey": "GMI API key",
+		"keySet": "API key configured",
+		"consent": "Allow recording audio to be sent to GMI Cloud for transcription. API charges may apply.",
+		"save": "Save transcription settings",
+		"removeKey": "Remove GMI API key",
+		"saved": "Transcription settings saved",
+		"loadFailed": "Could not load transcription settings.",
+		"saveFailed": "Could not save transcription settings.",
+		"phraseHelp": "Gemini provides phrase timestamps. Captions and selections use complete phrases.",
+		"phraseEditingHint": "Editing or cutting acts on the selected phrase. Timing is estimated by Gemini."
 	}
 }

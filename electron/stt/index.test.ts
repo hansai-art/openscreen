@@ -4,6 +4,8 @@ import { planChunks } from "./chunking";
 import { _resetSttManagerForTests, getSttManager, SttManager, shutdownStt } from "./index";
 import type { SttStatusEvent, SttTranscribeResponse } from "./transcriptionContract";
 
+vi.mock("electron", () => ({ app: { getPath: () => "/tmp/fake-stt-user-data" } }));
+
 // We swap the long-lived modules for fakes so the manager's `init()` and
 // `transcribe()` paths can be exercised without spawning real processes.
 const fakeWhisperServer = {
@@ -20,6 +22,13 @@ const fakeWhisperServer = {
 	stop: vi.fn(),
 	shutdown: vi.fn(),
 };
+
+const fakeGmiTranscribe = vi.fn();
+vi.mock("./gmiProvider", () => ({
+	GmiTranscriptionProvider: class {
+		transcribe = fakeGmiTranscribe;
+	},
+}));
 
 vi.mock("./whisperServer", () => {
 	class FakeWhisperServerManager {
@@ -57,6 +66,14 @@ describe("SttManager", () => {
 	let warnSpy: MockInstance<typeof console.warn>;
 
 	beforeEach(() => {
+		fakeGmiTranscribe.mockReset();
+		fakeGmiTranscribe.mockResolvedValue({
+			segments: [{ text: "繁體字幕", startSec: 0.25, endSec: 0.75 }],
+			wordSegments: [],
+			detectedLanguage: "zh",
+			backend: "gmi-gemini",
+			timing: { elapsedSec: 0.5, audioSec: 1, rtf: 0.5 },
+		});
 		fakeWhisperServer.start.mockClear();
 		fakeWhisperServer.transcribe.mockClear();
 		fakeWhisperServer.stop.mockClear();
@@ -74,6 +91,105 @@ describe("SttManager", () => {
 		// them instead of letting a dozen lines per test onto the suite's output.
 		infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
 		warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+	});
+
+	it("routes an authorized GMI run through cloud chunks with absolute caption times, without local models", async () => {
+		const mgr = new SttManager({
+			getProviderConfig: () => ({
+				provider: "gmi",
+				cloudConsent: true,
+				apiKey: "cloud-secret",
+			}),
+		});
+		const events: SttStatusEvent[] = [];
+		mgr.addStatusSink((event) => events.push(event));
+		const result = await mgr.transcribe({ samples: new Float32Array(91 * 16_000) });
+		expect(result.backend).toBe("gmi-gemini");
+		expect(result.segments).toEqual([
+			{ text: "繁體字幕", startSec: 0.25, endSec: 0.75 },
+			{ text: "繁體字幕", startSec: 90.25, endSec: 90.75 },
+		]);
+		expect(result.wordSegments).toEqual([]);
+		expect(fakeWhisperServer.start).not.toHaveBeenCalled();
+		expect(fakeWhisperServer.transcribe).not.toHaveBeenCalled();
+		expect(fakeGmiTranscribe.mock.calls.map(([request]) => request.samples.length)).toEqual([
+			90 * 16_000,
+			16_000,
+		]);
+		expect(
+			events.filter((event) => event.phase === "transcribe").map((event) => event.completedSec),
+		).toEqual([0, 90, 91]);
+	});
+
+	it.each([
+		{ provider: "gmi" as const, cloudConsent: false, apiKey: "cloud-secret" },
+		{ provider: "gmi" as const, cloudConsent: true },
+	])("rejects GMI before decoding or networking when consent/key is missing", async (config) => {
+		const mgr = new SttManager({ getProviderConfig: () => config });
+		await expect(mgr.transcribe({ sourcePath: "/must-not-read/private.mp4" })).rejects.toThrow(
+			/consent|API key/i,
+		);
+		expect(fakeGmiTranscribe).not.toHaveBeenCalled();
+		expect(fakeWhisperServer.start).not.toHaveBeenCalled();
+	});
+
+	it("rejects the whole GMI transcript when a later cloud chunk fails, without a local fallback", async () => {
+		fakeGmiTranscribe
+			.mockResolvedValueOnce({
+				segments: [{ text: "第一段", startSec: 0, endSec: 1 }],
+				wordSegments: [],
+				detectedLanguage: "zh",
+				backend: "gmi-gemini",
+			})
+			.mockRejectedValueOnce(new Error("GMI HTTP 401"));
+		const mgr = new SttManager({
+			getProviderConfig: () => ({
+				provider: "gmi",
+				cloudConsent: true,
+				apiKey: "cloud-secret",
+			}),
+		});
+		await expect(mgr.transcribe({ samples: new Float32Array(91 * 16_000) })).rejects.toThrow(
+			/chunk 2\/2.*GMI HTTP 401/,
+		);
+		expect(fakeGmiTranscribe).toHaveBeenCalledTimes(2);
+		expect(fakeWhisperServer.transcribe).not.toHaveBeenCalled();
+	});
+
+	it("rejects empty GMI input instead of reporting an unattempted empty transcript as success", async () => {
+		const mgr = new SttManager({
+			getProviderConfig: () => ({
+				provider: "gmi",
+				cloudConsent: true,
+				apiKey: "cloud-secret",
+			}),
+		});
+		await expect(mgr.transcribe({ samples: new Float32Array() })).rejects.toThrow(/empty audio/i);
+		expect(fakeGmiTranscribe).not.toHaveBeenCalled();
+	});
+
+	it("cancel aborts an active GMI request and discards a response arriving after cancellation", async () => {
+		let resolve!: (value: unknown) => void;
+		fakeGmiTranscribe.mockImplementationOnce(
+			() =>
+				new Promise((done) => {
+					resolve = done;
+				}),
+		);
+		const mgr = new SttManager({
+			getProviderConfig: () => ({
+				provider: "gmi",
+				cloudConsent: true,
+				apiKey: "cloud-secret",
+			}),
+		});
+		const pending = mgr.transcribe({ samples: new Float32Array(16_000) });
+		await vi.waitFor(() => expect(fakeGmiTranscribe).toHaveBeenCalledOnce());
+		const signal = fakeGmiTranscribe.mock.calls[0][0].signal as AbortSignal;
+		mgr.cancel();
+		expect(signal.aborted).toBe(true);
+		resolve({ segments: [], wordSegments: [], detectedLanguage: "zh", backend: "gmi-gemini" });
+		await expect(pending).rejects.toMatchObject({ name: "AbortError" });
 	});
 
 	afterEach(() => {

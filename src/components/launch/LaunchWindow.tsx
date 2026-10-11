@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { useI18n, useScopedT } from "@/contexts/I18nContext";
 import { getAvailableLocales, getLocaleName } from "@/i18n/loader";
 import { offersEditableCursor } from "@/lib/editableCursorAvailability";
@@ -672,6 +673,7 @@ export function LaunchWindow() {
 					await new Promise((resolve) => setTimeout(resolve, 25));
 				}
 				console.warn("Recording did not start because device preferences could not be resolved.");
+				toast.error(t("recording.devicesNotReady"));
 			} finally {
 				if (startWhenDevicesReadyInFlight.current === pending) {
 					startWhenDevicesReadyInFlight.current = null;
@@ -680,7 +682,7 @@ export function LaunchWindow() {
 			}
 		})();
 		return pending;
-	}, []);
+	}, [t]);
 
 	// The main process pushes every change through `onSelectedSourceChanged`, so
 	// this only needs one read to seed the initial value (plus one on focus, in
@@ -775,8 +777,10 @@ export function LaunchWindow() {
 							void startWhenDevicesReady();
 						}
 					})
-					.catch(() => {
+					.catch((error) => {
 						recordAfterSourceSelectionRef.current = false;
+						console.warn("Could not open the recording source picker:", error);
+						toast.error(t("recording.sourcePickerFailed"));
 					});
 				return;
 			}
@@ -790,6 +794,7 @@ export function LaunchWindow() {
 			recording,
 			saving,
 			startWhenDevicesReady,
+			t,
 			toggleRecording,
 		],
 	);

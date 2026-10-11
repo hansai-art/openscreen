@@ -432,5 +432,22 @@
 	"cpuCompositor": {
 		"notice": "沒有相容的 GPU，正在使用 CPU 算繪，因此播放較慢。",
 		"exportWarning": "沒有相容的 GPU：這次匯出將在 CPU 上執行，耗時會比平常長很多。"
+	},
+	"transcriptionSettings": {
+		"title": "語音轉錄",
+		"description": "選擇產生逐字稿與字幕的轉錄引擎。",
+		"provider": "轉錄引擎",
+		"whisper": "Whisper（本機）",
+		"traditional": "GMI 逐字稿與字幕使用臺灣繁體中文。",
+		"apiKey": "GMI API 金鑰",
+		"keySet": "金鑰已設定",
+		"consent": "允許將錄影音訊傳送至 GMI Cloud 進行轉錄，可能產生 API 費用。",
+		"save": "儲存轉錄設定",
+		"removeKey": "移除 GMI 金鑰",
+		"saved": "轉錄設定已儲存",
+		"loadFailed": "無法載入轉錄設定。",
+		"saveFailed": "無法儲存轉錄設定。",
+		"phraseHelp": "Gemini 以句子提供時間碼；字幕顯示與選取都以整句為單位。",
+		"phraseEditingHint": "編輯或剪除會作用於選取的整句；時間由 Gemini 估計。"
 	}
 }

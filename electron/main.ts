@@ -60,6 +60,7 @@ import {
 } from "./ipc/handlers";
 import { isOnlyLingeringOverlay } from "./lingeringOverlay";
 import { installMainProcessErrorGuards } from "./main-process-errors";
+import { replaceMainWindow } from "./mainWindowTransition";
 import { showMessageBoxOver } from "./messageBox";
 import {
 	registerPermissionsIpc,
@@ -69,6 +70,7 @@ import {
 import { setDisplaySleepBlocked } from "./recording/displaySleepBlocker";
 import { offersStarPrompt, REPO_URL, storeReviewUrl } from "./star-prompt";
 import { registerSttIpc, shutdownStt } from "./stt";
+import { registerTranscriptionSettingsIpc } from "./stt/settingsIpc";
 import { checkLatestRelease } from "./update-checker";
 import { loadUpdateMode, saveUpdateMode } from "./update-settings";
 import {
@@ -1005,13 +1007,14 @@ function forceCloseEditorWindow(windowToClose: BrowserWindow | null) {
 }
 
 function createEditorWindowWrapper() {
-	if (mainWindow) {
+	mainWindow = replaceMainWindow(mainWindow, createEditorWindow, (previous) => {
 		isForceClosing = true;
-		mainWindow.close();
-		isForceClosing = false;
-		mainWindow = null;
-	}
-	mainWindow = createEditorWindow();
+		try {
+			previous.close();
+		} finally {
+			isForceClosing = false;
+		}
+	});
 	editorHasUnsavedChanges = false;
 
 	mainWindow.on("close", (event) => {
@@ -1364,13 +1367,14 @@ appReady?.then(async () => {
 	await ensureRecordingsDir();
 
 	function switchToHudWrapper() {
-		if (mainWindow) {
+		mainWindow = replaceMainWindow(mainWindow, createHudOverlayWindow, (previous) => {
 			isForceClosing = true;
-			mainWindow.close();
-			isForceClosing = false;
-			mainWindow = null;
-		}
-		showMainWindow();
+			try {
+				previous.close();
+			} finally {
+				isForceClosing = false;
+			}
+		});
 	}
 
 	const { mcpController } = registerIpcHandlers(
@@ -1399,7 +1403,8 @@ appReady?.then(async () => {
 	);
 
 	// Native STT (whisper.cpp + forced alignment) — single instance per app.
-	registerSttIpc(ipcMain);
+	const transcriptionSettings = registerTranscriptionSettingsIpc(ipcMain);
+	registerSttIpc(ipcMain, () => transcriptionSettings.getProviderConfig());
 
 	await loadAndRegisterGlobalShortcut(showMainWindow);
 
